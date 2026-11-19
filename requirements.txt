@@ -1,0 +1,11 @@
+fastapi==0.165.0
+starlette==1.7.0
+uvicorn[standard]==0.54.0
+pillow==12.3.0
+pillow-heif==1.8.1
+numpy==2.5.3
+onnxruntime==1.29.0
+opencv-python-headless==5.0.0.93
+sqlcipher3-binary==0.6.0
+zipstream-ng==1.9.3
+python-multipart==0.0.32

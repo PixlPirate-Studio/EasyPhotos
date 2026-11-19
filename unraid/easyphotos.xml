@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>EasyPhotos</Name>
+  <Repository>ghcr.io/pixlpirate-studio/easyphotos:latest</Repository>
+  <Registry>https://github.com/PixlPirate-Studio/EasyPhotos/pkgs/container/easyphotos</Registry>
+  <Network>bridge</Network>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/PixlPirate-Studio/EasyPhotos/issues</Support>
+  <Project>https://github.com/PixlPirate-Studio/EasyPhotos</Project>
+  <Overview>Lightweight self-hosted photo gallery. Reads your existing photo folders, makes small thumbnails, finds and groups faces (same AI models as Immich), map, calendar, tags, albums, duplicate finder, Recycle Bin, users with roles, and an API for random photos. One container: no separate database needed.</Overview>
+  <Category>MediaServer:Photos</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/PixlPirate-Studio/EasyPhotos/main/web/img/icon-512.png</Icon>
+  <ExtraParams>--restart unless-stopped</ExtraParams>
+  <Config Name="Web UI port" Target="8080" Default="8080" Mode="tcp" Description="Port for the web page" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Appdata (database, settings)" Target="/config" Default="/mnt/user/appdata/easyphotos" Mode="rw" Description="Small. Holds the encrypted database and backups." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/easyphotos</Config>
+  <Config Name="Thumbnails" Target="/thumbs" Default="/mnt/user/easyphotos-thumbs" Mode="rw" Description="The biggest folder EasyPhotos makes. Point it at a share on your array, not appdata." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/easyphotos-thumbs</Config>
+  <Config Name="Photo library 1" Target="/libraries/family" Default="/mnt/user/Photos" Mode="rw" Description="Your photos. Use rw to allow deleting to the Recycle Bin, or ro for read-only. Add more paths as /libraries/something-else." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/Photos</Config>
+  <Config Name="Database encryption key" Target="EP_DB_KEY" Default="" Mode="" Description="Any long random password. Set it before the FIRST start and never change it, or the database can't be opened." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="Time zone" Target="TZ" Default="America/Indiana/Indianapolis" Mode="" Description="Used for video dates and the overnight speed boost." Type="Variable" Display="always" Required="false" Mask="false">America/Indiana/Indianapolis</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User the app runs as (99 = nobody)" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group the app runs as (100 = users)" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="UMASK" Target="UMASK" Default="002" Mode="" Description="File permissions for new files" Type="Variable" Display="advanced" Required="false" Mask="false">002</Config>
+</Container>
