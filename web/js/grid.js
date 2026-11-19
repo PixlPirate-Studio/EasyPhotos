@@ -24,7 +24,14 @@ export class PhotoGrid {
     this.el.append(this.groupsEl);
     if (this.useScrubber) { this.scrubEl = h('nav', { class: 'scrubber', 'aria-label': 'Jump to date' }); this.el.append(this.scrubEl); }
     this.selbar = null;
-    this._resize = () => { clearTimeout(this._rt); this._rt = setTimeout(() => this.render(), 120); };
+    this.days = [];
+    this.renderedWidth = 0;
+    // Only redraw when the width really changes (rotating the phone, resizing the window).
+    // Phones fire "resize" when the browser's toolbar shrinks while scrolling; ignore those.
+    this._resize = () => {
+      clearTimeout(this._rt);
+      this._rt = setTimeout(() => { if (Math.abs(this.width() - this.renderedWidth) > 2) this.render(); }, 150);
+    };
   }
 
   mount(parent) {
@@ -44,6 +51,7 @@ export class PhotoGrid {
 
   async reload(before = null) {
     this.items = []; this.next = before; this.done = false; this.jumped = !!before;
+    this.days = [];
     this.groupsEl.innerHTML = '';
     this.groupsEl.append(h('div', { class: 'spinner' }));
     await this.loadMore(true);
@@ -56,10 +64,12 @@ export class PhotoGrid {
       const qs = new URLSearchParams({ ...this.query, limit: 400 });
       if (this.next) { qs.set('before_ts', this.next.before_ts); qs.set('before_id', this.next.before_id); }
       const res = await api('/api/assets?' + qs);
+      const start = this.items.length;
       this.items.push(...res.items);
       this.next = res.next;
       this.done = !res.next;
-      this.render();
+      if (first || !this.days.length) this.render();
+      else this.appendFrom(start);
     } catch (e) { errToast(e); }
     finally { this.loading = false; }
   }
@@ -94,60 +104,117 @@ export class PhotoGrid {
     return 210;
   }
 
+  width() {
+    return Math.floor(this.groupsEl.clientWidth || this.el.clientWidth || window.innerWidth - 40);
+  }
+
+  groupDays(items) {
+    const days = [];
+    let cur = null;
+    for (const it of items) {
+      const d = (it.t || '').slice(0, 10);
+      if (!cur || cur.day !== d) { cur = { day: d, items: [] }; days.push(cur); }
+      cur.items.push(it);
+    }
+    return days;
+  }
+
+  layoutDay(day, width) {
+    const target = this.rowHeight();
+    const gap = 4;
+    const cities = {};
+    day.items.forEach(i => { if (i.c) cities[i.c] = (cities[i.c] || 0) + 1; });
+    const place = Object.entries(cities).sort((a, b) => b[1] - a[1]).map(x => x[0]).slice(0, 2).join(' · ');
+    const sec = h('section', { class: 'day' },
+      h('div', { class: 'day-head' },
+        h('h3', {}, fmtDay(day.day)),
+        place ? h('span', { class: 'place' }, place) : null,
+        h('button', { class: 'btn small ghost selday', onclick: () => this.toggleMany(day.items.map(i => i.id)) }, 'Select day')));
+    let row = [], sum = 0;
+    const flush = (last) => {
+      if (!row.length) return;
+      const avail = width - gap * (row.length - 1);
+      let hgt = avail / sum;
+      if (last && hgt > target * 1.25) hgt = target;
+      const r = h('div', { class: 'jrow', style: { height: `${Math.floor(hgt)}px` } });
+      for (const it of row) r.append(this.tile(it, Math.floor(hgt * (it.w / it.h))));
+      sec.append(r);
+      row = []; sum = 0;
+    };
+    for (const it of day.items) {
+      const ar = Math.max(0.3, Math.min(4, (it.w || 1) / (it.h || 1)));
+      row.push(it); sum += ar;
+      if (sum * target + gap * (row.length - 1) >= width) flush(false);
+    }
+    flush(true);
+    return sec;
+  }
+
+  // Remember which photo is at the top of the screen so a redraw can put it back there.
+  anchor() {
+    const top = (document.querySelector('.topbar')?.getBoundingClientRect().bottom || 0) + 4;
+    for (const t of this.groupsEl.querySelectorAll('.tile')) {
+      const r = t.getBoundingClientRect();
+      if (r.bottom > top) return { id: t.dataset.id, offset: r.top };
+    }
+    return null;
+  }
+
+  restore(a) {
+    if (!a) return;
+    const t = this.groupsEl.querySelector(`.tile[data-id="${a.id}"]`);
+    if (t) window.scrollBy(0, t.getBoundingClientRect().top - a.offset);
+  }
+
   render() {
-    const width = Math.floor(this.groupsEl.clientWidth || this.el.clientWidth || window.innerWidth - 40);
+    const a = this.days.length ? this.anchor() : null;
+    const width = this.width();
+    this.renderedWidth = width;
+    this.items.forEach((it, i) => { it._i = i; });
+    this.groupsEl.style.minHeight = a ? `${this.groupsEl.offsetHeight}px` : '';
     this.groupsEl.innerHTML = '';
+    this.days = [];
     if (this.jumped) {
       this.groupsEl.append(h('div', { class: 'row', style: { marginBottom: '14px' } },
         h('button', { class: 'btn small', onclick: () => { this.reload(); } }, '↑ Back to newest')));
     }
     if (!this.items.length) {
+      this.groupsEl.style.minHeight = '';
       if (this.done) this.groupsEl.append(h('div', { class: 'empty' }, icon('photos'), h('div', {}, this.emptyText)));
       else this.groupsEl.append(h('div', { class: 'spinner' }));
       return;
     }
-    const days = [];
-    let cur = null;
-    for (const it of this.items) {
-      const d = (it.t || '').slice(0, 10);
-      if (!cur || cur.day !== d) { cur = { day: d, items: [] }; days.push(cur); }
-      cur.items.push(it);
-    }
-    const target = this.rowHeight();
-    const gap = 4;
-    let index = 0;
-    for (const day of days) {
-      const cities = {};
-      day.items.forEach(i => { if (i.c) cities[i.c] = (cities[i.c] || 0) + 1; });
-      const place = Object.entries(cities).sort((a, b) => b[1] - a[1]).map(x => x[0]).slice(0, 2).join(' · ');
-      const dayIds = day.items.map(i => i.id);
-      const sec = h('section', { class: 'day' },
-        h('div', { class: 'day-head' },
-          h('h3', {}, fmtDay(day.day)),
-          place ? h('span', { class: 'place' }, place) : null,
-          h('button', { class: 'btn small ghost selday', onclick: () => this.toggleMany(dayIds) }, 'Select day')));
-      let row = [], sum = 0;
-      const flush = (last) => {
-        if (!row.length) return;
-        const avail = width - gap * (row.length - 1);
-        let hgt = avail / sum;
-        if (last && hgt > target * 1.25) hgt = target;
-        const r = h('div', { class: 'jrow', style: { height: `${Math.floor(hgt)}px` } });
-        for (const it of row) r.append(this.tile(it, Math.floor(hgt * (it.w / it.h))));
-        sec.append(r);
-        row = []; sum = 0;
-      };
-      for (const it of day.items) {
-        it._i = index++;
-        const ar = Math.max(0.3, Math.min(4, (it.w || 1) / (it.h || 1)));
-        row.push(it); sum += ar;
-        if (sum * target + gap * (row.length - 1) >= width) flush(false);
-      }
-      flush(true);
-      this.groupsEl.append(sec);
+    for (const day of this.groupDays(this.items)) {
+      day.el = this.layoutDay(day, width);
+      this.days.push(day);
+      this.groupsEl.append(day.el);
     }
     this.groupsEl.append(this.sentinel);
     this.io.observe(this.sentinel);
+    this.el.classList.toggle('selecting', this.selected.size > 0);
+    this.groupsEl.style.minHeight = '';
+    this.restore(a);
+  }
+
+  // Adds newly loaded photos at the bottom without touching what's already on screen.
+  appendFrom(start) {
+    const width = this.renderedWidth || this.width();
+    const fresh = this.items.slice(start);
+    fresh.forEach((it, i) => { it._i = start + i; });
+    const groups = this.groupDays(fresh);
+    const last = this.days[this.days.length - 1];
+    if (last && groups.length && groups[0].day === last.day) {
+      // Same day continues: redo just that day (earlier rows come out identical).
+      last.items.push(...groups.shift().items);
+      const el = this.layoutDay(last, width);
+      last.el.replaceWith(el);
+      last.el = el;
+    }
+    for (const day of groups) {
+      day.el = this.layoutDay(day, width);
+      this.days.push(day);
+      this.groupsEl.insertBefore(day.el, this.sentinel);
+    }
     this.el.classList.toggle('selecting', this.selected.size > 0);
   }
 

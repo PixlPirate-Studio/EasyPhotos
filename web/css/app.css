@@ -130,7 +130,7 @@ main.content{flex:1 1 auto;min-width:0;padding:20px 28px 60px}
 .people-strip span{max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .timeline{display:flex;gap:0}
 .timeline .groups{flex:1;min-width:0}
-.day{content-visibility:auto;contain-intrinsic-size:auto 400px;margin-bottom:22px}
+.day{margin-bottom:22px}
 .day-head{display:flex;align-items:center;gap:10px;margin:0 0 10px;min-height:28px}
 .day-head h3{font-size:15px}
 .day-head .place{font-size:13px;color:var(--muted)}
