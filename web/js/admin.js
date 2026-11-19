@@ -15,131 +15,224 @@ const post = (url, body = {}) => api(url, { method: 'POST', body });
 
 // ---------------------------------------------------------------- Library
 
+const expanded = new Set(); // folders the admin opened (kept while browsing)
+
 export async function library(el) {
-  const jobsBox = h('div');
+  const progressBox = h('div');
+  const activityBox = h('div');
   const libsBox = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '20px' } });
+  const scanBtn = h('button', { class: 'btn', onclick: async () => {
+    try {
+      if (scanBtn.dataset.mode === 'stop') { await post('/api/admin/jobs/stop_scan'); toast('Stopping the scan. Thumbnails keep going for what was found.'); }
+      else { await post('/api/admin/jobs/scan'); toast('Looking for photos…'); }
+      setTimeout(tick, 800);
+    } catch (e) { errToast(e); }
+  } }, 'Scan for new photos');
   el.append(head('Library', 'Your photo folders. EasyPhotos reads them; it only changes files when you delete something.', [
-    h('button', { class: 'btn', onclick: async () => { await post('/api/admin/jobs/scan'); toast('Looking for new photos…'); } }, 'Scan for new photos'),
-    h('button', { class: 'btn primary', onclick: () => findFaces() }, icon('scan'), 'Find faces'),
-  ]), jobsBox, libsBox);
+    scanBtn, h('button', { class: 'btn primary', onclick: () => findFaces() }, icon('scan'), 'Find faces'),
+  ]), progressBox, activityBox, libsBox);
 
   async function findFaces() {
-    try { await post('/api/admin/jobs/find_faces'); toast('Finding faces in every photo. This runs in the background at low priority.'); refresh(); }
+    try { await post('/api/admin/jobs/find_faces'); toast('Finding faces in every photo. This runs in the background at low priority.'); tick(); }
     catch (e) { errToast(e); }
   }
 
-  async function refresh() {
-    let j, libs;
-    try { [j, libs] = await Promise.all([api('/api/admin/jobs'), api('/api/admin/libraries')]); }
-    catch (e) { return errToast(e); }
-    drawJobs(j);
-    drawLibs(libs);
+  // ------------------------------------------------ what's happening (3 steps)
+  function step(n, title, state, lines) {
+    const mark = state === 'done' ? h('span', { class: 'stepmark done' }, icon('check'))
+      : h('span', { class: 'stepmark' + (state === 'busy' ? ' busy' : state === 'warn' ? ' warn' : '') }, String(n));
+    return h('div', { class: 'step' }, mark, h('div', { class: 'grow', style: { display: 'flex', flexDirection: 'column', gap: '8px', minWidth: 0 } },
+      h('b', {}, title), lines));
   }
 
-  function drawJobs(j) {
+  function drawProgress(j, libs) {
     const c = j.counts;
-    jobsBox.innerHTML = '';
-    const card = h('section', { class: 'card', style: { marginBottom: '20px', borderColor: '#2F3E62' } });
-    const chip = (text) => h('span', { class: 'badge green', style: { padding: '6px 12px', fontWeight: 500, fontSize: '13px' } }, text);
-    const facesDone = c.images ? Math.max(0, c.images - c.faces_pending) : 0;
-    const pct = c.images ? Math.round(facesDone / c.images * 100) : 0;
-    if (!j.worker_alive) card.append(h('div', { class: 'hint', style: { color: 'var(--orange)' } }, 'The background worker is starting… If this stays here, check Logs.'));
+    const scanning = j.scanning || [];
+    const stopped = libs.filter(l => l.scan_stopped);
+    scanBtn.dataset.mode = scanning.length ? 'stop' : '';
+    scanBtn.textContent = scanning.length ? 'Stop scan' : stopped.length ? 'Resume scan' : 'Scan for new photos';
+    scanBtn.className = scanning.length ? 'btn warn' : 'btn';
+    progressBox.innerHTML = '';
+    const card = h('section', { class: 'card', style: { marginBottom: '20px' } }, h('h2', {}, 'What’s happening'));
+    if (!j.worker_alive) card.append(h('div', { class: 'hint', style: { color: 'var(--orange)' } }, 'The background worker hasn’t checked in for a few minutes. If this stays, look at Logs.'));
+    if (j.paused) card.append(h('div', { class: 'row', style: { color: 'var(--orange)' } }, 'All background work is paused.',
+      h('button', { class: 'btn small', onclick: async () => { await post('/api/admin/jobs/resume'); tick(); } }, 'Resume')));
+
+    // Step 1: finding photos
     const sc = j.status.scan;
-    if (sc) {
-      const color = sc.state === 'error' ? 'var(--orange)' : sc.state === 'running' ? 'var(--text)' : 'var(--text2)';
-      card.append(h('div', { class: 'row', style: { fontSize: '14px', color } },
-        h('span', { class: 'dot' + (sc.state === 'running' ? ' busy' : ''), style: sc.state === 'error' ? { background: 'var(--orange)' } : null }),
-        h('span', { class: 'grow' }, sc.state === 'running' ? sc.message : `Last scan: ${sc.message}`, sc.state !== 'running' ? h('span', { class: 'hint' }, ` · ${fmtAgo(sc.updated_at).toLowerCase()}`) : null),
-        sc.state === 'error' ? h('a', { href: '#/admin/logs?problems=1' }, 'See logs →') : null));
+    let s1;
+    if (scanning.length) {
+      s1 = step(1, 'Finding your photos', 'busy', [
+        ...scanning.map(s => h('div', {}, `Looking through ${s.name}… `, h('b', {}, num(s.found)), ' photos & videos found so far (still counting)')),
+        h('div', { class: 'hint' }, 'Thumbnails are made at the same time. You can stop the scan any time; resuming skips everything already found.'),
+      ]);
+    } else if (stopped.length) {
+      s1 = step(1, 'Finding your photos (stopped)', 'warn', [h('div', {}, stopped.map(l => l.scan_message).join(' ')),
+        h('div', {}, h('button', { class: 'btn small', onclick: async () => { await post('/api/admin/jobs/scan'); toast('Resuming. Files already found are skipped.'); setTimeout(tick, 800); } }, 'Resume scan'))]);
+    } else if (!libs.length) {
+      s1 = step(1, 'Finding your photos', 'todo', [h('div', { class: 'hint' }, 'Add a library below to start.')]);
     } else {
-      card.append(h('div', { class: 'row hint' }, h('span', { class: 'dot' }), 'Waiting for the first scan…'));
+      const err = sc && sc.state === 'error';
+      s1 = step(1, `Found ${num(c.total)} photos & videos`, err ? 'warn' : 'done', [
+        sc ? h('div', { class: 'hint', style: err ? { color: 'var(--orange)' } : null }, `Last scan ${fmtAgo(sc.updated_at).toLowerCase()}: ${sc.message || ''}`) : null,
+        err ? h('a', { href: '#/admin/logs?problems=1' }, 'See what went wrong →') : null]);
     }
-    if (c.meta_pending) {
-      card.append(h('div', { class: 'row' }, h('span', { class: 'dot busy' }), h('b', {}, 'Making thumbnails'), h('span', { class: 'hint' }, `${num(c.meta_pending)} of ${num(c.total)} left`)),
-        h('div', { class: 'progress' }, h('div', { style: { width: `${Math.round((1 - c.meta_pending / Math.max(1, c.total)) * 100)}%` } })));
-    }
+    card.append(s1);
+
+    // Step 2: thumbnails
+    const done = Math.max(0, c.total - c.meta_pending);
+    const pct = c.total ? Math.floor(done / c.total * 100) : 0;
+    const thumbLines = [
+      h('div', {}, h('b', {}, num(done)), ` of ${num(c.total)} done`, c.meta_pending && j.thumbs_eta_seconds ? h('span', { class: 'hint' }, ` · ${fmtEta(j.thumbs_eta_seconds)}${scanning.length ? ' (for what’s found so far)' : ''}`) : null,
+        j.thumbs_rate && c.meta_pending ? h('span', { class: 'hint' }, ` · about ${num(Math.round(j.thumbs_rate))} per minute`) : null),
+      h('div', { class: 'progress' }, h('div', { style: { width: `${pct}%` } })),
+    ];
+    if (c.meta_errors) thumbLines.push(h('div', { class: 'hint', style: { color: 'var(--orange)' } }, `${num(c.meta_errors)} files couldn’t be read (damaged or unsupported). `, h('a', { href: '#/admin/logs?problems=1' }, 'See which')));
+    card.append(step(2, 'Making thumbnails', !c.total ? 'todo' : c.meta_pending ? 'busy' : 'done', thumbLines));
+
+    // Step 3: faces
+    const facesDone = c.images ? Math.max(0, c.images - c.faces_pending) : 0;
     if (j.faces_started) {
-      const running = c.faces_pending > 0 && !j.paused;
-      card.append(h('div', { class: 'row' },
-        h('span', { class: 'dot' + (running ? ' busy' : '') }),
-        h('b', {}, running ? 'Finding faces in all folders' : (c.faces_pending ? 'Face finding paused' : 'Face finding is done')),
-        h('span', { class: 'hint' }, `${num(facesDone)} of ${num(c.images)} photos${j.faces_eta_seconds && running ? ' · ' + fmtEta(j.faces_eta_seconds) : ''}`),
-        c.faces_pending ? h('div', { style: { marginLeft: 'auto', display: 'flex', gap: '8px' } },
-          j.paused ? h('button', { class: 'btn small', onclick: async () => { await post('/api/admin/jobs/resume'); refresh(); } }, 'Resume')
-            : h('button', { class: 'btn small', onclick: async () => { await post('/api/admin/jobs/pause'); refresh(); } }, 'Pause')) : null,
-      ), h('div', { class: 'progress' }, h('div', { style: { width: `${pct}%` } })),
-      h('div', { class: 'row', style: { fontSize: '13px', color: 'var(--text2)', gap: '10px 28px' } },
-        h('span', {}, `${num(j.faces_found)} faces found so far`), h('span', {}, `Grouped into ${num(j.people_groups)} people`),
-        h('a', { href: '#/admin/faces' }, 'Start labeling →')));
+      const fpct = c.images ? Math.floor(facesDone / c.images * 100) : 0;
+      card.append(step(3, 'Finding faces', c.faces_pending ? 'busy' : 'done', [
+        h('div', {}, h('b', {}, num(facesDone)), ` of ${num(c.images)} photos checked`, j.faces_eta_seconds && c.faces_pending ? h('span', { class: 'hint' }, ` · ${fmtEta(j.faces_eta_seconds)}`) : null),
+        h('div', { class: 'progress' }, h('div', { style: { width: `${fpct}%` } })),
+        h('div', { class: 'row', style: { fontSize: '13px', color: 'var(--text2)', gap: '6px 24px' } },
+          h('span', {}, `${num(j.faces_found)} faces found`), h('span', {}, `grouped into ${num(j.people_groups)} people`), h('a', { href: '#/admin/faces' }, 'Name them →')),
+        c.meta_pending ? h('div', { class: 'hint' }, 'Faces are checked after each photo’s thumbnail is made.') : null,
+      ]));
     } else {
-      card.append(h('div', { class: 'row' }, icon('scan'), h('div', { class: 'grow' }, h('b', {}, 'Face finding hasn’t started'),
-        h('div', { class: 'hint' }, 'Click “Find faces” to look through every photo. It can take hours or days on a big library and won’t slow down your other apps.')),
-        h('button', { class: 'btn primary', onclick: findFaces }, 'Find faces')));
+      card.append(step(3, 'Finding faces', 'todo', [
+        h('div', { class: 'hint' }, 'Not started. Click “Find faces” to look through every photo. It can take a day or more on a big library and won’t slow down your other apps.'),
+        h('div', {}, h('button', { class: 'btn small primary', onclick: findFaces }, icon('scan'), 'Find faces'))]));
     }
+    const chip = (text) => h('span', { class: 'badge green', style: { padding: '6px 12px', fontWeight: 500, fontSize: '13px' } }, text);
     card.append(h('div', { class: 'row', style: { paddingTop: '12px', borderTop: '1px solid var(--line)', gap: '10px' } },
       chip(`Uses ${j.threads} of ${j.cpus} threads at lowest priority`),
       j.night_boost ? chip(`${j.night_threads} threads overnight`) : null,
-      chip('Never stops. Other apps always go first'),
+      chip('Other apps always go first'),
+      j.paused ? null : h('button', { class: 'btn small ghost', onclick: async () => { await post('/api/admin/jobs/pause'); toast('Paused. Everything picks up where it left off when you resume.'); tick(); } }, 'Pause everything'),
       h('a', { href: '#/admin/settings', style: { fontSize: '13px' } }, 'Change speed')));
-    if (c.meta_errors) card.append(h('div', { class: 'hint', style: { color: 'var(--orange)' } }, `${num(c.meta_errors)} files could not be read (damaged or unsupported).`));
-    jobsBox.append(card);
+    progressBox.append(card);
   }
 
-  function drawLibs(libs) {
+  // ------------------------------------------------ live activity
+  let onlyProblems = false, lastId = 0, items = [];
+  const list = h('div', { class: 'activity' });
+  const probToggle = h('input', { type: 'checkbox', onchange: () => { onlyProblems = probToggle.checked; lastId = 0; items = []; loadActivity(); } });
+  activityBox.append(h('section', { class: 'card', style: { marginBottom: '20px', gap: '10px' } },
+    h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Live activity'),
+      h('label', { class: 'check', style: { minHeight: 0, fontSize: '13px' } }, probToggle, 'Only problems'),
+      h('a', { href: '#/admin/logs', style: { fontSize: '13px' } }, 'Full logs →')),
+    list));
+  async function loadActivity() {
+    try {
+      const rows = await api(`/api/admin/activity?limit=40&problems=${onlyProblems ? 1 : 0}&after=${lastId}`);
+      if (rows.length) { lastId = rows[0].id; items = [...rows, ...items].slice(0, 40); }
+      list.innerHTML = '';
+      if (!items.length) list.append(h('div', { class: 'hint' }, onlyProblems ? 'No problems so far.' : 'Nothing yet. Activity shows up here while EasyPhotos works.'));
+      for (const r of items) {
+        const t = new Date(r.ts * 1000);
+        list.append(h('div', { class: 'act-row ' + r.level },
+          h('span', { class: 'mono muted' }, t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })),
+          h('span', { class: 'act-kind' }, { scan: 'Scan', thumbs: 'Thumbnail', faces: 'Faces', duplicates: 'Duplicates', command: 'You' }[r.kind] || r.kind),
+          h('span', { class: 'act-text' }, r.text)));
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  // ------------------------------------------------ libraries with collapsible folders
+  const folderCache = {};
+  function drawLibs(libs, jobs) {
     libsBox.innerHTML = '';
     if (!libs.length) {
       libsBox.append(h('div', { class: 'card' }, h('h2', {}, 'Add your first library'),
         h('p', { class: 'hint', style: { margin: 0 } }, 'In Unraid, map your photo share into the container (for example /mnt/user/Photos → /libraries/family). Then add it here.'),
-        h('div', {}, h('button', { class: 'btn primary', onclick: () => addLibrary(refresh) }, '+ Add library'))));
+        h('div', {}, h('button', { class: 'btn primary', onclick: () => addLibrary(tick) }, '+ Add library'))));
       return;
     }
     for (const lib of libs) {
-      const tree = h('div', {}, h('div', { class: 'spinner' }));
-      const card = h('section', { class: 'card', style: { padding: '0 0 8px', gap: '0' } },
+      const treeBox = h('div');
+      const status = lib.scanning ? h('span', { class: 'hint', style: { color: 'var(--accent2)' } }, `Scanning now… ${num(lib.scan_found)} found`)
+        : h('span', { class: 'hint' }, `${num(lib.count)} files · scanned ${fmtAgo(lib.last_scan_at).toLowerCase()}`);
+      libsBox.append(h('section', { class: 'card', style: { padding: '0 0 8px', gap: '0' } },
         h('div', { class: 'row', style: { padding: '16px 20px' } },
           icon('folder'),
-          h('div', { class: 'grow' }, h('b', { style: { fontSize: '16px' } }, lib.name), lib.enabled ? null : h('span', { class: 'badge', style: { marginLeft: '8px' } }, 'Turned off'),
-            h('div', { class: 'mono muted' }, lib.path)),
-          h('span', { class: 'hint' }, `${num(lib.count)} files · scanned ${fmtAgo(lib.last_scan_at).toLowerCase()}`),
+          h('div', { class: 'grow', style: { minWidth: 0 } }, h('b', { style: { fontSize: '16px' } }, lib.name), lib.enabled ? null : h('span', { class: 'badge', style: { marginLeft: '8px' } }, 'Turned off'),
+            h('div', { class: 'mono muted' }, lib.path), status,
+            lib.scan_message && !lib.scanning ? h('div', { class: 'hint', style: lib.scan_stopped || /couldn|empty|not found/.test(lib.scan_message) ? { color: 'var(--orange)' } : null }, lib.scan_message) : null),
           !lib.exists ? h('span', { class: 'badge orange' }, 'Folder missing') : null,
           lib.exists && !lib.writable ? h('span', { class: 'badge', title: 'Deleting needs Read/Write' }, 'Read-only') : null,
-          h('button', { class: 'btn small', onclick: async () => { await post('/api/admin/jobs/scan', { library_id: lib.id }); toast('Scanning…'); } }, 'Scan'),
-          h('button', { class: 'iconbtn', 'aria-label': 'Library options', onclick: () => libraryOptions(lib, refresh) }, icon('more'))),
-        h('div', { class: 'folder-row head' }, h('span', {}, 'Folder'), h('span', {}, 'Photos'), h('span', {}, 'Faces'), h('span', {}, 'Status')),
-        tree);
-      libsBox.append(card);
-      api(`/api/admin/libraries/${lib.id}/folders`).then(folders => {
-        tree.innerHTML = '';
-        const shown = folders.filter(f => f.path.split('/').length <= 3).slice(0, 400);
-        for (const f of shown) {
-          const depth = f.path ? f.path.split('/').length : 0;
-          const status = f.pending ? ['Making thumbnails…', 'var(--accent2)'] : (f.faces_done >= f.count ? ['Faces done', 'var(--green)'] : (j_started() ? ['Finding faces…', 'var(--accent2)'] : ['Ready', 'var(--muted)']));
-          tree.append(h('a', { class: 'folder-row', href: `#/admin/folder?library=${lib.id}&folder=${encodeURIComponent(f.path)}`, style: { color: 'var(--text)' } },
-            h('span', { style: { display: 'flex', alignItems: 'center', gap: '10px', paddingLeft: `${depth * 22}px`, minWidth: 0 } }, icon('folder'),
-              h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: depth ? 400 : 600 } }, f.path ? f.path.split('/').pop() : '(all)')),
-            h('span', { class: 'muted' }, num(f.count)), h('span', { class: 'muted' }, num(f.faces)),
-            h('span', { style: { color: status[1], fontSize: '13px' } }, status[0])));
-        }
-        if (folders.length > shown.length) tree.append(h('div', { class: 'hint', style: { padding: '10px 20px' } }, 'Deeper folders are hidden here. Click a folder to see everything inside it.'));
-      }).catch(errToast);
+          lib.scanning ? h('button', { class: 'btn small warn', onclick: async () => { await post('/api/admin/jobs/stop_scan'); toast('Stopping…'); setTimeout(tick, 800); } }, 'Stop scan')
+            : h('button', { class: 'btn small', onclick: async () => { await post('/api/admin/jobs/scan', { library_id: lib.id }); toast(lib.scan_stopped ? 'Resuming. Files already found are skipped.' : 'Scanning…'); setTimeout(tick, 800); } }, lib.scan_stopped ? 'Resume scan' : 'Scan'),
+          h('button', { class: 'iconbtn', 'aria-label': 'Library options', onclick: () => libraryOptions(lib, tick) }, icon('more'))),
+        h('div', { class: 'folder-row head' }, h('span', {}, 'Folder'), h('span', {}, 'Files'), h('span', {}, 'Faces'), h('span', {}, 'Status')),
+        treeBox));
+      const draw = (folders) => drawTree(treeBox, lib, folders, jobs);
+      if (folderCache[lib.id]) draw(folderCache[lib.id]);
+      api(`/api/admin/libraries/${lib.id}/folders`).then(f => { folderCache[lib.id] = f; draw(f); }).catch(errToast);
     }
-    libsBox.append(h('div', {}, h('button', { class: 'btn', onclick: () => addLibrary(refresh) }, '+ Add another library')));
+    libsBox.append(h('div', {}, h('button', { class: 'btn', onclick: () => addLibrary(tick) }, '+ Add another library')));
   }
-  let jobsCache = null;
-  const j_started = () => jobsCache && jobsCache.faces_started;
-  const origDraw = drawJobs;
-  drawJobs = (j) => { jobsCache = j; origDraw(j); }; // eslint-disable-line no-func-assign
-  await refresh();
-  const t = setInterval(async () => {
+
+  function drawTree(box, lib, folders, jobs) {
+    const byPath = {}, kids = {};
+    folders.forEach(f => { byPath[f.path] = f; });
+    folders.forEach(f => {
+      if (!f.path) return;
+      const parent = f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) : '';
+      (kids[parent] = kids[parent] || []).push(f);
+    });
+    box.innerHTML = '';
+    const facesOn = jobs && jobs.faces_started;
+    const statusOf = (f) => {
+      if (f.pending) return [`Thumbnails ${num(f.count - f.pending)}/${num(f.count)}`, 'var(--accent2)'];
+      if (!facesOn) return ['Thumbnails done', 'var(--muted)'];
+      if (f.faces_done >= f.count) return ['All done', 'var(--green)'];
+      return [`Faces ${num(f.faces_done)}/${num(f.count)}`, 'var(--accent2)'];
+    };
+    const render = (parentPath, depth) => {
+      const list = (kids[parentPath] || []).sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));
+      for (const f of list) {
+        const key = `${lib.id}|${f.path}`;
+        const hasKids = !!(kids[f.path] && kids[f.path].length);
+        const open = expanded.has(key);
+        const st = statusOf(f);
+        const toggle = h('button', { class: 'tree-toggle', 'aria-label': open ? 'Collapse' : 'Expand', 'aria-expanded': open ? 'true' : 'false',
+          style: { visibility: hasKids ? 'visible' : 'hidden' }, onclick: (e) => { e.preventDefault(); e.stopPropagation(); open ? expanded.delete(key) : expanded.add(key); drawTree(box, lib, folders, jobs); } },
+          icon(open ? 'down2' : 'next'));
+        box.append(h('div', { class: 'folder-row' },
+          h('span', { style: { display: 'flex', alignItems: 'center', gap: '6px', paddingLeft: `${depth * 20}px`, minWidth: 0 } }, toggle,
+            h('a', { href: `#/admin/folder?library=${lib.id}&folder=${encodeURIComponent(f.path)}`, style: { display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text)', minWidth: 0 } },
+              icon('folder'), h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: f.path }, f.path.split('/').pop()))),
+          h('span', { class: 'muted' }, num(f.count)), h('span', { class: 'muted' }, num(f.faces)),
+          h('span', { style: { color: st[1], fontSize: '13px' } }, st[0])));
+        if (open && hasKids) render(f.path, depth + 1);
+      }
+    };
+    const root = byPath[''];
+    if (root && (kids[''] || []).length === 0) {
+      box.append(h('div', { class: 'hint', style: { padding: '10px 20px' } }, `${num(root.count)} files directly in this folder.`));
+    }
+    render('', 0);
+    if (!folders.length) box.append(h('div', { class: 'hint', style: { padding: '10px 20px' } }, 'No photos found yet.'));
+  }
+
+  // ------------------------------------------------ refresh loop
+  let lastJobs = null, ticks = 0;
+  async function tick() {
     try {
-      const j = await api('/api/admin/jobs');
-      drawJobs(j);
-      const busy = (j.status.scan && j.status.scan.state === 'running') || j.counts.meta_pending;
-      if (busy || wasBusy) drawLibs(await api('/api/admin/libraries'));
-      wasBusy = busy;
+      const [j, libs] = await Promise.all([api('/api/admin/jobs'), api('/api/admin/libraries')]);
+      lastJobs = j;
+      drawProgress(j, libs);
+      const busy = (j.scanning && j.scanning.length) || j.counts.meta_pending || (j.faces_started && j.counts.faces_pending);
+      if (ticks++ === 0 || busy || ticks % 6 === 0) drawLibs(libs, j);
     } catch (e) { /* ignore */ }
-  }, 5000);
-  let wasBusy = true;
+    loadActivity();
+  }
+  await tick();
+  const t = setInterval(tick, 4000);
+  void lastJobs;
   return () => clearInterval(t);
 }
 

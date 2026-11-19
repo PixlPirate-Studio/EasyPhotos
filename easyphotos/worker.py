@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -25,6 +26,26 @@ def set_status(name: str, state: str, message: str = "", rate=None) -> None:
           "ON CONFLICT(name) DO UPDATE SET state=excluded.state, message=excluded.message, "
           "rate=COALESCE(excluded.rate, job_status.rate), updated_at=excluded.updated_at",
           (name, state, message, rate, time.time()))
+
+
+_act_count = 0
+
+
+def activity(entries) -> None:
+    """Adds lines to the live activity feed. entries: list of (kind, level, text)."""
+    global _act_count
+    if not entries:
+        return
+    now = time.time()
+    db.exmany("INSERT INTO activity(ts, kind, level, text) VALUES (?,?,?,?)", [(now, k, lv, t[:500]) for k, lv, t in entries])
+    _act_count += len(entries)
+    if _act_count > 200:
+        _act_count = 0
+        db.ex("DELETE FROM activity WHERE id <= (SELECT MAX(id) - 2000 FROM activity)")
+
+
+def rel_label(row) -> str:
+    return row["path"] if row else "?"
 
 
 def current_threads(s: dict) -> int:
@@ -45,6 +66,17 @@ class Worker:
         self.last_dupes = 0.0
         self.last_daily = 0.0
         self.face_times = []
+        self.meta_times = []
+        self.scan_thread = None
+        self.scan_stop = threading.Event()
+        self.last_beat = 0.0
+        self.threads = 1
+
+    def heartbeat(self, force=False):
+        if force or time.time() - self.last_beat > 20:
+            self.last_beat = time.time()
+            set_status("worker", "running", f"Using {self.threads} thread{'s' if self.threads != 1 else ''} at low priority")
+        return False
 
     # ------------------------------------------------------------ commands
     def handle_commands(self) -> bool:
@@ -56,7 +88,14 @@ class Worker:
             name = r["name"]
             args = json.loads(r["args"] or "{}")
             log.info("Command: %s %s", name, args)
-            if name == "scan":
+            friendly = {"scan": "Scan for new photos requested", "find_faces": "Find faces started", "rescan_faces": "Re-scan of all faces started",
+                        "recluster": "Re-grouping faces", "rebuild_thumbs": "Rebuilding all thumbnails", "duplicates": "Duplicate check requested",
+                        "refresh_places": "Updating place names"}.get(name, name)
+            activity([("command", "info", friendly)])
+            if name == "stop_scan":
+                self.scan_stop.set()
+                self.force_scan.clear()
+            elif name == "scan":
                 lib = args.get("library_id")
                 if lib:
                     self.force_scan.add(int(lib))
@@ -87,29 +126,76 @@ class Worker:
 
     # ------------------------------------------------------------ scanning
     def maybe_scan(self, s) -> bool:
-        did = False
+        """Starts a scan in its own thread so thumbnails can be made at the same time."""
+        if self.scan_thread is not None and self.scan_thread.is_alive():
+            return False
         interval = float(s["scan_interval_hours"]) * 3600
+        todo = []
         for lib in db.q("SELECT * FROM libraries WHERE enabled=1"):
+            if lib["scan_stopped"] and lib["id"] not in self.force_scan:
+                continue  # stopped by the admin; only "Resume scan" starts it again
             due = lib["last_scan_at"] is None or (interval > 0 and time.time() - lib["last_scan_at"] > interval)
             if lib["id"] in self.force_scan or due:
                 self.force_scan.discard(lib["id"])
-                set_status("scan", "running", f"Looking for new photos in {lib['name']}…")
-                stats = scanner.scan_library(lib, progress=lambda st, n=lib["name"]: set_status(
-                    "scan", "running", f"Looking for new photos in {n}… {st['seen']:,} photos/videos found in {st['folders']:,} folders"))
-                if stats["missing"]:
-                    set_status("scan", "error", f"{lib['name']}: folder {lib['path']} was not found inside the container. Check the Path mapping in Unraid.")
-                else:
-                    msg = (f"{lib['name']}: found {stats['seen']:,} photos/videos in {stats['folders']:,} folders "
-                           f"({stats['added']:,} new, {stats['changed']:,} changed, {stats['removed']:,} removed)")
-                    if stats["unreadable"]:
-                        msg += f". {stats['unreadable']:,} files/folders couldn't be read (permissions?) - see Logs"
-                    elif stats["seen"] == 0:
-                        msg += ". The folder looks empty - is the Host Path in Unraid right?"
-                    set_status("scan", "error" if (stats["unreadable"] or stats["seen"] == 0) else "idle", msg)
-                if stats["added"] or stats["changed"] or stats["removed"]:
-                    self.dupes_dirty = True
-                did = True
-        return did
+                todo.append(dict(lib))
+        if not todo:
+            return False
+        self.scan_stop.clear()
+        self.scan_thread = threading.Thread(target=self._scan_libraries, args=(todo,), daemon=True)
+        self.scan_thread.start()
+        return True
+
+    def _scan_libraries(self, libs):
+        for lib in libs:
+            if self.scan_stop.is_set():
+                break
+            try:
+                self._scan_one(lib)
+            except Exception as e:
+                log.exception("Scan of %s failed: %s", lib["name"], e)
+                activity([("scan", "error", f"Scan of {lib['name']} failed: {e}")])
+                set_status("scan", "error", f"Scan of {lib['name']} failed: {e}")
+
+    def _scan_one(self, lib):
+        name = lib["name"]
+        root = lib["path"].rstrip("/")
+        set_status("scan", "running", f"Step 1: finding photos in {name}…")
+        activity([("scan", "info", f"Started looking for photos in {name} ({lib['path']})")])
+        last = [0.0]
+
+        def on_folder(d):
+            if time.time() - last[0] > 1.0:
+                last[0] = time.time()
+                rel = str(d)[len(root):].lstrip("/") or "(top folder)"
+                activity([("scan", "info", f"Looking in {name}/{rel}")])
+
+        def progress(st):
+            set_status("scan", "running", f"Step 1: finding photos in {name}… {st['seen']:,} found in {st['folders']:,} folders so far")
+
+        stats = scanner.scan_library(lib, progress=progress, on_folder=on_folder, should_stop=self.scan_stop.is_set)
+        if stats["stopped"]:
+            msg = f"{name}: scan stopped after finding {stats['seen']:,} files. Thumbnails continue for those."
+            set_status("scan", "stopped", msg)
+            activity([("scan", "info", msg)])
+            return
+        if stats["missing"]:
+            msg = f"{name}: folder {lib['path']} was not found inside the container. Check the Path mapping in Unraid."
+            set_status("scan", "error", msg)
+            activity([("scan", "error", msg)])
+            return
+        msg = (f"{name}: found {stats['seen']:,} photos/videos in {stats['folders']:,} folders "
+               f"({stats['added']:,} new, {stats['changed']:,} changed, {stats['removed']:,} removed)")
+        level = "info"
+        if stats["unreadable"]:
+            msg += f". {stats['unreadable']:,} files/folders couldn't be read (permissions?). See Logs."
+            level = "warning"
+        elif stats["seen"] == 0:
+            msg += ". The folder looks empty. Is the Host Path in Unraid right?"
+            level = "warning"
+        set_status("scan", "error" if level != "info" else "idle", msg)
+        activity([("scan", level, "Finished: " + msg)])
+        if stats["added"] or stats["changed"] or stats["removed"]:
+            self.dupes_dirty = True
 
     # ------------------------------------------------------------ metadata + thumbnails
     def meta_batch(self, threads: int) -> bool:
@@ -119,11 +205,26 @@ class Worker:
         if not ids:
             return False
         left = db.val("SELECT COUNT(*) FROM assets WHERE meta_status=0 AND deleted_at IS NULL", default=0)
-        set_status("thumbs", "running", f"Making thumbnails… {left:,} to go")
+        paths = {r["id"]: r for r in db.q(
+            f"SELECT a.id, l.name || '/' || a.path AS path FROM assets a JOIN libraries l ON l.id=a.library_id "
+            f"WHERE a.id IN ({','.join('?' * len(ids))})", ids)}
+        set_status("thumbs", "running", f"Making thumbnails… now: {rel_label(paths.get(ids[0]))}")
+        t0 = time.time()
         with ThreadPoolExecutor(max_workers=threads) as pool:
             results = list(pool.map(scanner.process_meta, ids))
+        entries = []
         for aid, cols in zip(ids, results):
             scanner.save_meta(aid, cols)
+            label = rel_label(paths.get(aid))
+            if cols.get("meta_status") == -1:
+                entries.append(("thumbs", "warning", f"Couldn't read {label}: {cols.get('error')}"))
+            else:
+                entries.append(("thumbs", "info", f"Thumbnail made: {label}"))
+        activity(entries)
+        self.meta_times.append((len(ids), time.time() - t0))
+        self.meta_times = self.meta_times[-30:]
+        rate = sum(x[0] for x in self.meta_times) / (sum(x[1] for x in self.meta_times) or 1) * 60
+        set_status("thumbs", "running", f"Making thumbnails… last: {rel_label(paths.get(ids[-1]))}", rate=rate)
         self.dupes_dirty = True
         if left <= len(ids):
             scanner.pair_live_photos()
@@ -155,8 +256,13 @@ class Worker:
         min_score = float(s["face_min_score"])
         min_size = int(s["face_min_size"])
         t0 = time.time()
+        paths = {x["id"]: x for x in db.q(
+            f"SELECT a.id, l.name || '/' || a.path AS path FROM assets a JOIN libraries l ON l.id=a.library_id "
+            f"WHERE a.id IN ({','.join('?' * len(rows))})", [r["id"] for r in rows])}
+        entries = []
         for r in rows:
             aid = r["id"]
+            set_status("faces", "running", f"Finding faces… now: {rel_label(paths.get(aid))}")
             try:
                 p = media.thumb_path(aid, "p")
                 with Image.open(p) as im:
@@ -173,9 +279,13 @@ class Worker:
                     save_face_crop(fid, rgb, (x1, y1, x2, y2))
                     cl.assign(fid, emb)
                 db.ex("UPDATE assets SET face_status=1 WHERE id=?", (aid,))
+                n = len(found)
+                entries.append(("faces", "info", f"{'No faces' if not n else f'{n} face' + ('s' if n > 1 else '')} in {rel_label(paths.get(aid))}"))
             except Exception as e:
                 log.warning("Face scan failed for asset %s: %s", aid, e)
                 db.ex("UPDATE assets SET face_status=-1, error=? WHERE id=?", (str(e)[:300], aid))
+                entries.append(("faces", "warning", f"Face finding failed for {rel_label(paths.get(aid))}: {e}"))
+        activity(entries)
         cl.finish()
         dt_ = time.time() - t0
         self.face_times.append((len(rows), dt_))
@@ -183,8 +293,7 @@ class Worker:
         n = sum(x[0] for x in self.face_times)
         secs = sum(x[1] for x in self.face_times) or 1
         rate = n / secs * 60  # photos per minute
-        left = db.val("SELECT COUNT(*) FROM assets WHERE face_status=0 AND deleted_at IS NULL", default=0)
-        set_status("faces", "running", f"Finding faces… {left:,} photos to go", rate=rate)
+        set_status("faces", "running", f"Finding faces… last: {rel_label(paths.get(rows[-1]['id']))}", rate=rate)
         return True
 
     def embed_manual(self, s, threads: int) -> bool:
@@ -228,10 +337,12 @@ class Worker:
         if db.val("SELECT COUNT(*) FROM assets WHERE meta_status=0 AND deleted_at IS NULL", default=0) > 0:
             return False
         set_status("duplicates", "running", "Checking for duplicates…")
-        res = dupes.rebuild()
+        activity([("duplicates", "info", "Checking for duplicate photos…")])
+        res = dupes.rebuild(should_stop=self.heartbeat)
         self.dupes_dirty = False
         self.last_dupes = time.time()
         set_status("duplicates", "idle", f"{res.get('exact', 0)} exact, {res.get('similar', 0)} look-alike groups")
+        activity([("duplicates", "info", f"Duplicate check done: {res.get('exact', 0)} groups of exact copies, {res.get('similar', 0)} look-alike groups")])
         return True
 
     def maybe_xmp(self, s) -> bool:
@@ -261,10 +372,14 @@ class Worker:
                 s = settings.get_all()
                 if s["paused"]:
                     set_status("worker", "paused", "Paused by admin")
+                    self.last_beat = 0
                     time.sleep(5)
                     continue
                 threads = current_threads(s)
-                set_status("worker", "running", f"Using {threads} thread{'s' if threads != 1 else ''} at low priority")
+                if threads != self.threads:
+                    self.threads = threads
+                    self.heartbeat(force=True)
+                self.heartbeat()
                 did = self.maybe_scan(s) or did
                 did = self.meta_batch(threads) or did
                 did = self.embed_manual(s, threads) or did

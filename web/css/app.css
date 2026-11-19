@@ -293,3 +293,21 @@ main.content{flex:1 1 auto;min-width:0;padding:20px 28px 60px}
 .ftree label{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;font-size:14px}
 .ftree label:hover{background:var(--panel)}
 .ftree input{width:18px;height:18px;accent-color:var(--accent)}
+.step{display:flex;gap:14px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--line)}
+.step:first-of-type{border-top:0}
+.stepmark{width:28px;height:28px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;background:var(--line);color:var(--text2)}
+.stepmark.busy{background:var(--accentbg);color:var(--accent2);box-shadow:0 0 0 2px var(--accent);animation:pulse 1.6s ease-in-out infinite}
+.stepmark.done{background:#1C3328;color:var(--green)}
+.stepmark.done svg.i{width:16px;height:16px;stroke-width:3}
+.stepmark.warn{background:#3A2E1A;color:var(--orange)}
+.activity{display:flex;flex-direction:column;max-height:280px;overflow-y:auto;border:1px solid var(--line);border-radius:10px;background:var(--bg2)}
+.act-row{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:10px;padding:7px 12px;border-bottom:1px solid #1A1D25;font-size:13px;align-items:baseline}
+.act-row:last-child{border-bottom:0}
+.act-kind{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.act-text{color:var(--text2);overflow-wrap:anywhere}
+.act-row.warning .act-text{color:var(--orange)}
+.act-row.error .act-text{color:var(--red)}
+.tree-toggle{width:28px;height:28px;border:0;border-radius:6px;background:transparent;color:var(--muted);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;padding:0}
+.tree-toggle:hover{background:var(--line);color:var(--text)}
+.tree-toggle svg.i{width:16px;height:16px}
+@media (max-width:600px){.act-row{grid-template-columns:auto minmax(0,1fr)}.act-kind{display:none}.folder-row{grid-template-columns:minmax(0,1fr) auto auto;gap:10px;padding:8px 10px;font-size:13px}.folder-row>:nth-child(3){display:none}}

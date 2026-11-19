@@ -196,6 +196,14 @@ CREATE TABLE IF NOT EXISTS job_status (
     updated_at REAL
 );
 
+CREATE TABLE IF NOT EXISTS activity (
+    id INTEGER PRIMARY KEY,
+    ts REAL NOT NULL,
+    kind TEXT NOT NULL,
+    level TEXT NOT NULL DEFAULT 'info',
+    text TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS job_commands (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -233,9 +241,22 @@ def conn():
     return c
 
 
+MIGRATIONS = [
+    # (table, column, definition) added after the first release
+    ("libraries", "scan_started_at", "REAL"),
+    ("libraries", "scan_found", "INTEGER"),
+    ("libraries", "scan_message", "TEXT"),
+    ("libraries", "scan_stopped", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
 def init() -> None:
     c = conn()
     c.executescript(SCHEMA)
+    for table, col, definition in MIGRATIONS:
+        cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+        if col not in cols:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
     c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
     c.commit()
 

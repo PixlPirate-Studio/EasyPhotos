@@ -19,13 +19,18 @@ def asset_file(asset, lib=None) -> Path:
     return Path(lib["path"]) / asset["path"]
 
 
-def _walk(root: Path, stats: dict | None = None):
+def _walk(root: Path, stats: dict | None = None, on_folder=None, should_stop=None):
     """Yields (relative_path, size, mtime) for every photo/video under root."""
     stats = stats if stats is not None else {}
     stack = [root]
     while stack:
+        if should_stop and should_stop():
+            stats["stopped"] = True
+            return
         d = stack.pop()
         stats["folders"] = stats.get("folders", 0) + 1
+        if on_folder:
+            on_folder(d)
         try:
             with os.scandir(d) as it:
                 for e in it:
@@ -52,16 +57,18 @@ def _walk(root: Path, stats: dict | None = None):
             stats["unreadable"] = stats.get("unreadable", 0) + 1
 
 
-def scan_library(lib, progress=None) -> dict:
+def scan_library(lib, progress=None, on_folder=None, should_stop=None) -> dict:
     root = library_root(lib)
-    stats = {"added": 0, "changed": 0, "removed": 0, "seen": 0, "folders": 0, "unreadable": 0, "missing": False}
+    stats = {"added": 0, "changed": 0, "removed": 0, "seen": 0, "folders": 0, "unreadable": 0, "missing": False, "stopped": False}
     if not root.is_dir():
         log.error("Library folder missing inside the container: %s (check the Path mapping in Unraid)", root)
         stats["missing"] = True
+        db.ex("UPDATE libraries SET scan_message=? WHERE id=?", (f"Folder {root} was not found inside the container. Check the Path mapping in Unraid.", lib["id"]))
         return stats
     if not any(True for _ in os.scandir(root)):
         log.warning("Library folder %s is empty. Is the Host Path in Unraid pointing at the right share?", root)
     log.info("Scanning %s (%s)…", lib["name"], root)
+    db.ex("UPDATE libraries SET scan_started_at=?, scan_found=0, scan_stopped=0 WHERE id=?", (time.time(), lib["id"]))
     last_progress = time.time()
     existing = {r["path"]: r for r in db.q(
         "SELECT id, path, size, mtime, deleted_at FROM assets WHERE library_id=?", (lib["id"],))}
@@ -82,7 +89,7 @@ def scan_library(lib, progress=None) -> dict:
                 db.ex("DELETE FROM faces WHERE asset_id=? AND manual=0 AND confirmed=0", (aid,))
             batch_changed.clear()
 
-    for rel, size, mtime in _walk(root, stats):
+    for rel, size, mtime in _walk(root, stats, on_folder, should_stop):
         seen.add(rel)
         stats["seen"] += 1
         old = existing.get(rel)
@@ -98,16 +105,27 @@ def scan_library(lib, progress=None) -> dict:
             stats["changed"] += 1
         if len(batch_new) + len(batch_changed) >= 500:
             flush()
-        if progress and time.time() - last_progress > 2:
+        if time.time() - last_progress > 2:
             last_progress = time.time()
-            progress(stats)
+            db.ex("UPDATE libraries SET scan_found=? WHERE id=?", (stats["seen"], lib["id"]))
+            if progress:
+                progress(stats)
     flush()
+
+    if stats["stopped"]:
+        # Keep everything found so far; don't remove anything we didn't get to.
+        msg = f"Stopped by you after finding {stats['seen']:,} files. Thumbnails keep being made for those. Press Resume scan to continue."
+        db.ex("UPDATE libraries SET scan_started_at=NULL, scan_found=?, scan_message=?, scan_stopped=1 WHERE id=?",
+              (stats["seen"], msg, lib["id"]))
+        log.info("Scan of %s stopped by admin after %d files", lib["name"], stats["seen"])
+        return stats
 
     if stats["seen"] == 0 and existing:
         # Don't wipe the library if the folder suddenly looks empty (drive not mounted, etc.)
         log.error("%s looks empty now but had %d photos before. Skipping removal in case the drive isn't mounted.",
                   root, len(existing))
-        db.ex("UPDATE libraries SET last_scan_at=? WHERE id=?", (time.time(), lib["id"]))
+        db.ex("UPDATE libraries SET last_scan_at=?, scan_found=?, scan_message=? WHERE id=?",
+              (time.time(), 0, "Folder looks empty now, so nothing was removed. Is the drive mounted?", lib["id"]))
         return stats
     gone = [r["id"] for p, r in existing.items() if p not in seen and r["deleted_at"] is None]
     for aid in gone:
@@ -116,7 +134,13 @@ def scan_library(lib, progress=None) -> dict:
         with db.tx() as c:
             c.executemany("DELETE FROM assets WHERE id=?", [(a,) for a in gone])
     stats["removed"] = len(gone)
-    db.ex("UPDATE libraries SET last_scan_at=? WHERE id=?", (time.time(), lib["id"]))
+    msg = f"{stats['added']:,} new, {stats['changed']:,} changed, {stats['removed']:,} removed"
+    if stats["unreadable"]:
+        msg += f" · {stats['unreadable']:,} couldn't be read (see Logs)"
+    elif stats["seen"] == 0:
+        msg += " · folder looks empty. Is the Host Path in Unraid right?"
+    db.ex("UPDATE libraries SET last_scan_at=?, scan_found=?, scan_message=? WHERE id=?",
+          (time.time(), stats["seen"], msg, lib["id"]))
     log.info("Scanned %s: %s", lib["name"], stats)
     return stats
 

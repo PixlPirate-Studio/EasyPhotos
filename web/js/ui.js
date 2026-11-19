@@ -39,6 +39,7 @@ const P = {
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
   back: '<path d="M15 18l-6-6 6-6"/>',
   next: '<path d="M9 6l6 6-6 6"/>',
+  down2: '<path d="M6 9l6 6 6-6"/>',
   down: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',

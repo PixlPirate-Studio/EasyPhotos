@@ -107,8 +107,14 @@ def _lib_out(r):
     faces = db.val("SELECT COUNT(*) FROM faces f JOIN assets a ON a.id=f.asset_id WHERE a.library_id=? AND f.rejected=0", (r["id"],), 0)
     p = Path(r["path"])
     writable = os.access(p, os.W_OK) if p.exists() else False
+    scanning = bool(r["scan_started_at"]) and (r["last_scan_at"] is None or r["scan_started_at"] > r["last_scan_at"])
+    alive = db.val("SELECT updated_at FROM job_status WHERE name='worker'", default=0) or 0
+    if scanning and time.time() - alive > 300:
+        scanning = False  # worker restarted mid-scan
     return {"id": r["id"], "name": r["name"], "path": r["path"], "enabled": bool(r["enabled"]),
             "exists": p.is_dir(), "writable": writable, "last_scan_at": r["last_scan_at"],
+            "scanning": scanning, "scan_found": r["scan_found"], "scan_message": r["scan_message"],
+            "scan_stopped": bool(r["scan_stopped"]),
             "count": stats["n"] or 0, "pending": stats["pending"] or 0, "errors": stats["errors"] or 0,
             "faces_done": stats["faces_done"] or 0, "faces": faces}
 
@@ -205,7 +211,7 @@ def browse(path: str = "", user: User = Depends(admin_user)):
 
 # ------------------------------------------------------------ jobs
 
-JOB_NAMES = {"scan", "find_faces", "rescan_faces", "recluster", "rebuild_thumbs", "duplicates", "refresh_places"}
+JOB_NAMES = {"scan", "stop_scan", "find_faces", "rescan_faces", "recluster", "rebuild_thumbs", "duplicates", "refresh_places"}
 
 
 @router.get("/jobs")
@@ -224,14 +230,22 @@ def jobs(user: User = Depends(admin_user)):
     eta = None
     if face_rate and c["faces_pending"]:
         eta = c["faces_pending"] / face_rate * 60
+    thumb_rate = (st.get("thumbs") or {}).get("rate")
+    thumbs_eta = c["meta_pending"] / thumb_rate * 60 if thumb_rate and c["meta_pending"] else None
     worker = st.get("worker") or {}
-    alive = worker.get("updated_at") and time.time() - worker["updated_at"] < 120
+    alive = worker.get("updated_at") and time.time() - worker["updated_at"] < 180
+    scanning = [dict(name=r["name"], found=r["scan_found"] or 0) for r in db.q(
+        "SELECT name, scan_found FROM libraries WHERE scan_started_at IS NOT NULL AND (last_scan_at IS NULL OR scan_started_at > last_scan_at)")]
+    if not alive:
+        scanning = []
     return {
         "status": st, "counts": {k: c[k] or 0 for k in c.keys()},
         "faces_started": s["faces_started"], "faces_enabled": s["faces_enabled"], "paused": s["paused"],
         "faces_found": db.val("SELECT COUNT(*) FROM faces WHERE rejected=0", default=0),
         "people_groups": db.val("SELECT COUNT(*) FROM persons WHERE face_count>0", default=0),
-        "faces_eta_seconds": eta, "worker_alive": bool(alive),
+        "faces_eta_seconds": eta, "thumbs_eta_seconds": thumbs_eta, "worker_alive": bool(alive),
+        "worker_state": worker.get("state"), "scanning": scanning,
+        "thumbs_rate": thumb_rate, "faces_rate": face_rate,
         "threads": min(s["worker_threads"], os.cpu_count() or 1), "night_threads": min(s["night_threads"], os.cpu_count() or 1),
         "night_boost": s["night_boost"], "cpus": os.cpu_count(),
     }
@@ -449,6 +463,19 @@ def edit_apikey(kid: int, body: dict, user: User = Depends(admin_user)):
 def delete_apikey(kid: int, user: User = Depends(admin_user)):
     db.ex("DELETE FROM api_keys WHERE id=?", (kid,))
     return {"ok": True}
+
+
+# ------------------------------------------------------------ live activity
+
+@router.get("/activity")
+def activity_feed(limit: int = 60, problems: int = 0, after: int = 0, user: User = Depends(admin_user)):
+    where = "id > ?"
+    args = [after]
+    if problems:
+        where += " AND level IN ('warning','error')"
+    rows = db.q(f"SELECT id, ts, kind, level, text FROM activity WHERE {where} ORDER BY id DESC LIMIT ?",
+                args + [max(1, min(limit, 500))])
+    return [dict(r) for r in rows]
 
 
 # ------------------------------------------------------------ logs
