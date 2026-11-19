@@ -758,6 +758,7 @@ export async function settings(el) {
           h('label', { class: 'field grow' }, 'From (hour)', numIn('night_start', { min: 0, max: 23 })),
           h('label', { class: 'field grow' }, 'Until (hour)', numIn('night_end', { min: 0, max: 23 }))),
         h('label', { class: 'field' }, 'Look for new photos every', sel('scan_interval_hours', [[1, '1 hour'], [6, '6 hours'], [24, 'Day'], [0, 'Only when I click Scan']])),
+        h('label', { class: 'field' }, 'Unraid container log shows', sel('log_detail', [['files', 'Every file as it’s handled (most detail)'], ['summary', 'A progress summary every minute']])),
         chk('paused', 'Pause all background work')),
       h('section', { class: 'card' }, h('h2', {}, 'Recycle Bin'),
         h('span', { class: 'hint', style: { marginTop: '-10px' } }, 'Deleted photos go here first, into a hidden .recycle folder inside each library (same drive, so it’s instant).'),

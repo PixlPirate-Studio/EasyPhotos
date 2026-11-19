@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from .. import db, geocode, media, recycle, settings, xmp
-from ..security import User, admin_user, current_user, download_user
+from ..security import User, admin_user, audit, current_user, download_user
 from .common import (MIME, asset_path, build_filter, cached_file, get_asset_for, ids_param, library_clause,
                      ranged_file, visible_ids)
 
@@ -235,6 +235,7 @@ def edit_asset(asset_id: int, body: dict, user: User = Depends(admin_user)):
                           [(asset_id, t, time.time()) for t in ids])
         _cleanup_tags()
     xmp.mark_dirty([asset_id])
+    audit(None, user, "edited info for photo %d (%s)", asset_id, ", ".join(k for k in body if k != "tags") or "tags")
     return asset_detail(asset_id, user)
 
 
@@ -244,6 +245,7 @@ def bulk(body: dict, user: User = Depends(admin_user)):
     action = body.get("action")
     if not ids:
         raise HTTPException(400, "No photos selected.")
+    audit(None, user, "%s on %d photo%s", action, len(ids), "" if len(ids) == 1 else "s")
     now = time.time()
     ph = lambda n: ",".join("?" * n)  # noqa: E731
     if action in ("hide", "unhide"):
@@ -334,6 +336,7 @@ def download_prepare(body: dict, user: User = Depends(download_user)):
         for k in [k for k, v in _zip_tokens.items() if v["exp"] < now]:
             _zip_tokens.pop(k, None)
         _zip_tokens[token] = {"user": user.id, "ids": ids, "exp": now + 900}
+    audit(None, user, "downloaded %d photos as a zip", len(ids))
     return {"url": f"/api/download/zip/{token}", "count": len(ids)}
 
 

@@ -29,13 +29,20 @@ def set_status(name: str, state: str, message: str = "", rate=None) -> None:
 
 
 _act_count = 0
+_log_files = True
+KIND_LABEL = {"scan": "SCAN", "thumbs": "THUMB", "faces": "FACES", "duplicates": "DUPES", "command": "ADMIN"}
 
 
 def activity(entries) -> None:
-    """Adds lines to the live activity feed. entries: list of (kind, level, text)."""
+    """Adds lines to the live activity feed (and the Unraid container log). entries: list of (kind, level, text)."""
     global _act_count
     if not entries:
         return
+    for k, lv, t in entries:
+        if lv in ("warning", "error"):
+            (log.error if lv == "error" else log.warning)("%-5s %s", KIND_LABEL.get(k, k.upper()), t)
+        elif _log_files or k in ("command", "duplicates") or t.startswith(("Finished", "Started", "Matched")):
+            log.info("%-5s %s", KIND_LABEL.get(k, k.upper()), t)
     now = time.time()
     db.exmany("INSERT INTO activity(ts, kind, level, text) VALUES (?,?,?,?)", [(now, k, lv, t[:500]) for k, lv, t in entries])
     _act_count += len(entries)
@@ -71,6 +78,8 @@ class Worker:
         self.scan_stop = threading.Event()
         self.last_beat = 0.0
         self.threads = 1
+        self.last_summary = 0.0
+        self.was_busy = None
 
     def heartbeat(self, force=False):
         if force or time.time() - self.last_beat > 20:
@@ -87,7 +96,7 @@ class Worker:
         for r in rows:
             name = r["name"]
             args = json.loads(r["args"] or "{}")
-            log.info("Command: %s %s", name, args)
+            log.debug("Command: %s %s", name, args)
             friendly = {"scan": "Scan for new photos requested", "find_faces": "Find faces started", "rescan_faces": "Re-scan of all faces started",
                         "recluster": "Re-grouping faces", "rebuild_thumbs": "Rebuilding all thumbnails", "duplicates": "Duplicate check requested",
                         "refresh_places": "Updating place names"}.get(name, name)
@@ -330,6 +339,42 @@ class Worker:
             cluster.recompute_person(pid)
         return True
 
+    # ------------------------------------------------------------ progress summary for the container log
+    def summary(self, s) -> None:
+        if time.time() - self.last_summary < 60:
+            return
+        self.last_summary = time.time()
+        c = db.q1("SELECT COUNT(*) AS total, SUM(CASE WHEN meta_status=0 THEN 1 ELSE 0 END) AS thumbs_left, "
+                  "SUM(CASE WHEN meta_status=-1 THEN 1 ELSE 0 END) AS errors, "
+                  "SUM(CASE WHEN kind='image' AND is_live_part=0 THEN 1 ELSE 0 END) AS images, "
+                  "SUM(CASE WHEN face_status=0 THEN 1 ELSE 0 END) AS faces_left FROM assets WHERE deleted_at IS NULL")
+        total, tl, fl = c["total"] or 0, c["thumbs_left"] or 0, c["faces_left"] or 0
+        scanning = self.scan_thread is not None and self.scan_thread.is_alive()
+        faces_on = s["faces_enabled"] and s["faces_started"]
+        busy = scanning or tl or (faces_on and fl)
+        if not busy:
+            if self.was_busy is not False:
+                log.info("STATUS All caught up: %s photos & videos, all thumbnails made%s. Waiting for new photos.",
+                         f"{total:,}", ", faces done" if faces_on else "")
+            self.was_busy = False
+            return
+        self.was_busy = True
+        parts = []
+        if scanning:
+            found = db.val("SELECT SUM(scan_found) FROM libraries WHERE scan_started_at IS NOT NULL", default=0) or 0
+            parts.append(f"scan: {found:,} found so far")
+        rate = sum(x[0] for x in self.meta_times) / (sum(x[1] for x in self.meta_times) or 1) * 60 if self.meta_times else 0
+        eta = f", ~{_eta(tl / rate * 60)} left" if rate and tl else ""
+        parts.append(f"thumbnails: {total - tl:,}/{total:,} done ({rate:,.0f}/min{eta})" if tl else f"thumbnails: all {total:,} done")
+        if faces_on:
+            images = c["images"] or 0
+            frate = sum(x[0] for x in self.face_times) / (sum(x[1] for x in self.face_times) or 1) * 60 if self.face_times else 0
+            feta = f", ~{_eta(fl / frate * 60)} left" if frate and fl else ""
+            parts.append(f"faces: {max(0, images - fl):,}/{images:,} photos checked{feta}")
+        if c["errors"]:
+            parts.append(f"{c['errors']:,} files unreadable")
+        log.info("STATUS %s · %d threads", " · ".join(parts), self.threads)
+
     # ------------------------------------------------------------ others
     def maybe_dupes(self, s) -> bool:
         if not s["duplicates_enabled"] or not self.dupes_dirty:
@@ -397,11 +442,22 @@ class Worker:
                 if not did:
                     did = self.maybe_dupes(s) or self.maybe_xmp(s)
                 self.daily(s)
+                global _log_files
+                _log_files = s.get("log_detail", "files") == "files"
+                self.summary(s)
                 if not did:
                     time.sleep(3)
             except Exception as e:
                 log.exception("Worker error: %s", e)
                 time.sleep(10)
+
+
+def _eta(sec: float) -> str:
+    if sec < 3600:
+        return f"{max(1, round(sec / 60))} min"
+    if sec < 172800:
+        return f"{sec / 3600:.1f} hours"
+    return f"{sec / 86400:.1f} days"
 
 
 def save_face_crop(face_id: int, rgb: np.ndarray, box) -> None:
@@ -426,7 +482,7 @@ def _setup_logging():
         handlers.append(RotatingFileHandler(config.LOG_DIR / "worker.log", maxBytes=2_000_000, backupCount=2))
     except Exception:
         pass
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [worker] %(levelname)s %(message)s", handlers=handlers)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%Y-%m-%d %H:%M:%S", handlers=handlers)
 
 
 def main():

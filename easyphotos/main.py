@@ -32,7 +32,7 @@ def _start_worker():
     if shutil.which("nice"):
         cmd = ["nice", "-n", "19"] + cmd
     _worker_proc = subprocess.Popen(cmd, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    log.info("Background worker started (pid %s)", _worker_proc.pid)
+    log.info("START Background worker started (low priority, pid %s)", _worker_proc.pid)
 
 
 def _supervise():
@@ -47,6 +47,15 @@ def _supervise():
 async def lifespan(app: FastAPI):
     config.ensure_dirs()
     db.init()
+    from . import settings as _s
+    log.info("START EasyPhotos %s on port %s", __version__, config.PORT)
+    log.info("START Database %s (%s)", config.DB_PATH, "encrypted" if config.DB_KEY and db._sqlcipher else "NOT encrypted - set EP_DB_KEY on a new install")
+    log.info("START Thumbnails folder: %s", _s.thumbs_dir())
+    libs = db.q("SELECT name, path, enabled FROM libraries")
+    for lib in libs:
+        log.info("START Library %s -> %s%s", lib["name"], lib["path"], "" if lib["enabled"] else " (turned off)")
+    if not libs:
+        log.info("START No libraries yet. Add one in the web page: Library > Add library")
     if os.environ.get("EP_NO_WORKER") != "1":
         _start_worker()
         threading.Thread(target=_supervise, daemon=True).start()
@@ -126,7 +135,7 @@ def run():
         handlers.append(RotatingFileHandler(config.LOG_DIR / "web.log", maxBytes=2_000_000, backupCount=2))
     except Exception:
         pass
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [web] %(levelname)s %(message)s", handlers=handlers)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%Y-%m-%d %H:%M:%S", handlers=handlers)
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=config.PORT, proxy_headers=True, forwarded_allow_ips="*", log_level="warning")
 

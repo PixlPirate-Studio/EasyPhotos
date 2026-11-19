@@ -36,6 +36,8 @@ DEFAULTS = {
     "places_enabled": True,
     "xmp_enabled": False,
     "video_compat": True,
+    # What the Unraid container log shows: "files" = every file, "summary" = a progress line each minute
+    "log_detail": "files",
 }
 
 _INT_LIMITS = {
@@ -89,6 +91,8 @@ def clean(key: str, value):
     if isinstance(default, float):
         return max(0.1, min(0.99, float(value)))
     v = str(value or "").strip()
+    if key == "log_detail" and v not in ("files", "summary"):
+        raise ValueError("Log detail must be files or summary")
     if key == "thumb_format" and v not in ("webp", "jpeg"):
         raise ValueError("Format must be webp or jpeg")
     if key in ("thumbs_dir", "faces_dir") and v:

@@ -8,7 +8,9 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from .. import db
-from ..security import (SESSION_COOKIE, User, check_password_rules, check_rate, clear_failures, create_session,
+import logging
+
+from ..security import (SESSION_COOKIE, User, audit, check_password_rules, check_rate, clear_failures, create_session,
                         current_user, destroy_session, hash_password, note_failure, set_session_cookie,
                         user_from_request, user_public, verify_password)
 
@@ -39,6 +41,7 @@ def setup(body: dict, request: Request, response: Response):
     check_password_rules(password)
     cur = db.ex("INSERT INTO users(username, role, password_hash, created_at) VALUES (?, 'admin', ?, ?)",
                 (username, hash_password(password), time.time()))
+    audit(request, username, "created the first admin account")
     token, max_age = create_session(cur.lastrowid, True, request.headers.get("user-agent", ""))
     set_session_cookie(response, request, token, max_age, True)
     return {"user": user_public(db.q1("SELECT * FROM users WHERE id=?", (cur.lastrowid,)))}
@@ -65,8 +68,10 @@ def login(body: dict, request: Request, response: Response):
         return {"status": "need_password"}
     if user is None or not verify_password(password, user["password_hash"]):
         note_failure(request, username)
+        audit(request, username or "?", "failed sign-in (wrong username or password)", level=logging.WARNING)
         raise HTTPException(401, "Wrong username or password.")
     clear_failures(request, username)
+    audit(request, user, "signed in")
     token, max_age = create_session(user["id"], remember, request.headers.get("user-agent", ""))
     set_session_cookie(response, request, token, max_age, remember)
     return {"status": "ok", "user": user_public(user)}
@@ -85,6 +90,7 @@ def set_first_password(body: dict, request: Request, response: Response):
         raise HTTPException(400, "This account already has a password.")
     check_password_rules(password)
     db.ex("UPDATE users SET password_hash=? WHERE id=? AND password_hash IS NULL", (hash_password(password), user["id"]))
+    audit(request, user, "chose their password on first sign-in")
     remember = bool(body.get("remember", True))
     token, max_age = create_session(user["id"], remember, request.headers.get("user-agent", ""))
     set_session_cookie(response, request, token, max_age, remember)
@@ -105,6 +111,7 @@ def change_password(body: dict, user: User = Depends(current_user)):
         raise HTTPException(400, "Your current password is not right.")
     check_password_rules(body.get("new") or "")
     db.ex("UPDATE users SET password_hash=? WHERE id=?", (hash_password(body["new"]), user.id))
+    audit(None, user, "changed their password")
     return {"ok": True}
 
 

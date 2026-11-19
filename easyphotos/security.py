@@ -8,7 +8,18 @@ import time
 
 from fastapi import HTTPException, Request
 
+import logging
+
 from . import db
+
+audit_log = logging.getLogger("easyphotos.audit")
+
+
+def audit(request: Request | None, who, message: str, *args, level: int = logging.INFO) -> None:
+    """One line in the container log for sign-ins and admin changes."""
+    name = who["username"] if who is not None and not isinstance(who, str) else (who or "-")
+    ip = _client_ip(request) if request is not None else "-"
+    audit_log.log(level, "%-5s %s (%s): " + message, "USER", name, ip, *args)
 
 SESSION_COOKIE = "ep_session"
 SESSION_DAYS_REMEMBER = 30

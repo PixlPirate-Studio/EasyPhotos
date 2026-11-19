@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from PIL import Image
 
 from .. import cluster, db, media, xmp
-from ..security import User, admin_user, current_user
+from ..security import User, admin_user, audit, current_user
 from .common import cached_file, get_asset_for, library_clause
 
 router = APIRouter(prefix="/api")
@@ -65,6 +65,7 @@ def edit_person(person_id: int, body: dict, user: User = Depends(admin_user)):
     if "name" in body:
         if body["name"]:
             target = _rename(person_id, body["name"])
+            audit(None, user, "named a person %s%s", body["name"].strip(), " (merged)" if target != person_id else "")
         else:
             db.ex("UPDATE persons SET name=NULL WHERE id=?", (person_id,))
     if "hidden" in body:

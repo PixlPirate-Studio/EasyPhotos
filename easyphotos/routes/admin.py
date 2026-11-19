@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 
 from .. import config, db, recycle, settings
-from ..security import ROLES, User, admin_user
+from ..security import ROLES, User, admin_user, audit
 from .common import ids_param
 
 router = APIRouter(prefix="/api/admin")
@@ -55,6 +55,7 @@ def create_user(body: dict, user: User = Depends(admin_user)):
     uid = db.ex("INSERT INTO users(username, role, password_hash, all_libraries, created_at) VALUES (?,?,NULL,1,?)",
                 (username, role, time.time())).lastrowid
     _set_libraries(uid, body)
+    audit(None, user, "added user %s as %s", username, role)
     return _user_out(db.q1("SELECT * FROM users WHERE id=?", (uid,)))
 
 
@@ -70,6 +71,7 @@ def edit_user(uid: int, body: dict, user: User = Depends(admin_user)):
             if db.val("SELECT COUNT(*) FROM users WHERE role='admin'", default=0) <= 1:
                 raise HTTPException(400, "You need at least one admin.")
         db.ex("UPDATE users SET role=? WHERE id=?", (body["role"], uid))
+        audit(None, user, "changed %s's role to %s", target["username"], body["role"])
     _set_libraries(uid, body)
     return _user_out(db.q1("SELECT * FROM users WHERE id=?", (uid,)))
 
@@ -81,6 +83,7 @@ def reset_password(uid: int, user: User = Depends(admin_user)):
         raise HTTPException(404, "User not found.")
     db.ex("UPDATE users SET password_hash=NULL WHERE id=?", (uid,))
     db.ex("DELETE FROM sessions WHERE user_id=?", (uid,))
+    audit(None, user, "reset the password for %s", db.val("SELECT username FROM users WHERE id=?", (uid,)))
     return {"ok": True}
 
 
@@ -93,7 +96,9 @@ def delete_user(uid: int, user: User = Depends(admin_user)):
         raise HTTPException(404, "User not found.")
     if target["role"] == "admin" and db.val("SELECT COUNT(*) FROM users WHERE role='admin'", default=0) <= 1:
         raise HTTPException(400, "You need at least one admin.")
+    name = db.val("SELECT username FROM users WHERE id=?", (uid,))
     db.ex("DELETE FROM users WHERE id=?", (uid,))
+    audit(None, user, "deleted user %s", name)
     return {"ok": True}
 
 
@@ -138,6 +143,7 @@ def add_library(body: dict, user: User = Depends(admin_user)):
         if real == other or real.startswith(other + "/") or other.startswith(real + "/"):
             raise HTTPException(400, f"That folder overlaps with a library you already added ({r['path']}).")
     lid = db.ex("INSERT INTO libraries(name, path, created_at) VALUES (?,?,?)", (name, path, time.time())).lastrowid
+    audit(None, user, "added library %s (%s)", name, path)
     db.ex("INSERT INTO job_commands(name, args, created_at) VALUES ('scan', ?, ?)", (json.dumps({"library_id": lid}), time.time()))
     return _lib_out(db.q1("SELECT * FROM libraries WHERE id=?", (lid,)))
 
@@ -159,6 +165,7 @@ def remove_library(lid: int, user: User = Depends(admin_user)):
         media.remove_derivatives(r["id"])
     persons = [r["person_id"] for r in db.q(
         "SELECT DISTINCT f.person_id FROM faces f JOIN assets a ON a.id=f.asset_id WHERE a.library_id=? AND f.person_id IS NOT NULL", (lid,))]
+    audit(None, user, "removed library %s from EasyPhotos (files not touched)", db.val("SELECT name FROM libraries WHERE id=?", (lid,)))
     db.ex("DELETE FROM libraries WHERE id=?", (lid,))
     from ..cluster import recompute_person
     for pid in persons:
@@ -253,6 +260,7 @@ def jobs(user: User = Depends(admin_user)):
 
 @router.post("/jobs/{name}")
 def run_job(name: str, body: dict | None = None, user: User = Depends(admin_user)):
+    audit(None, user, "started job: %s %s", name, body or "")
     if name == "pause":
         settings.set_many({"paused": True})
         return {"ok": True}
@@ -298,6 +306,9 @@ def put_settings(body: dict, user: User = Depends(admin_user)):
     except OSError as e:
         raise HTTPException(400, f"Can't use that folder: {e}")
     now = time.time()
+    diff = {k: v for k, v in changed.items() if before.get(k) != v}
+    if diff:
+        audit(None, user, "changed settings: %s", ", ".join(f"{k}={v}" for k, v in diff.items()))
     if any(k in changed and changed[k] != before[k] for k in ("thumb_size", "preview_size", "thumb_format", "thumb_quality", "thumbs_dir")):
         db.ex("INSERT INTO job_commands(name, args, created_at) VALUES ('rebuild_thumbs', '{}', ?)", (now,))
     if "face_strictness" in changed and changed["face_strictness"] != before["face_strictness"]:
@@ -360,6 +371,7 @@ def resolve_duplicate(gid: int, body: dict, user: User = Depends(admin_user)):
         if not settings.get("allow_delete"):
             raise HTTPException(403, "Deleting is turned off in Admin settings.")
         res = recycle.delete_assets(others)
+        audit(None, user, "deleted %d duplicate cop%s to the Recycle Bin", res["moved"], "y" if res["moved"] == 1 else "ies")
         if res["moved"]:
             db.ex("UPDATE dup_groups SET status='resolved' WHERE id=?", (gid,))
         return {"ok": not res["errors"], **res}
@@ -386,14 +398,18 @@ def recycle_list(offset: int = 0, limit: int = 200, user: User = Depends(admin_u
 
 @router.post("/recycle/restore")
 def recycle_restore(body: dict, user: User = Depends(admin_user)):
-    return recycle.restore_assets(ids_param(body))
+    res = recycle.restore_assets(ids_param(body))
+    audit(None, user, "restored %d photos from the Recycle Bin", res["restored"])
+    return res
 
 
 @router.post("/recycle/purge")
 def recycle_purge(body: dict, user: User = Depends(admin_user)):
     if body.get("confirm") != "DELETE":
         raise HTTPException(400, "Type DELETE to confirm.")
-    return recycle.purge_assets(ids_param(body))
+    res = recycle.purge_assets(ids_param(body))
+    audit(None, user, "permanently deleted %d photos", res["purged"])
+    return res
 
 
 @router.post("/recycle/empty")
@@ -401,7 +417,9 @@ def recycle_empty(body: dict, user: User = Depends(admin_user)):
     if body.get("confirm") != "EMPTY":
         raise HTTPException(400, "Type EMPTY to confirm.")
     ids = [r["id"] for r in db.q("SELECT id FROM assets WHERE deleted_at IS NOT NULL")]
-    return recycle.purge_assets(ids)
+    res = recycle.purge_assets(ids)
+    audit(None, user, "emptied the Recycle Bin (%d photos deleted for good)", res["purged"])
+    return res
 
 
 # ------------------------------------------------------------ API keys
@@ -445,6 +463,7 @@ def create_apikey(body: dict, user: User = Depends(admin_user)):
                  1 if body.get("include_videos") else 0, time.time())).lastrowid
     out = _key_out(db.q1("SELECT * FROM api_keys WHERE id=?", (kid,)))
     out["key"] = key  # shown once
+    audit(None, user, "created API key %s", name)
     return out
 
 
@@ -461,6 +480,7 @@ def edit_apikey(kid: int, body: dict, user: User = Depends(admin_user)):
 
 @router.delete("/apikeys/{kid}")
 def delete_apikey(kid: int, user: User = Depends(admin_user)):
+    audit(None, user, "deleted API key %s", db.val("SELECT name FROM api_keys WHERE id=?", (kid,)))
     db.ex("DELETE FROM api_keys WHERE id=?", (kid,))
     return {"ok": True}
 
