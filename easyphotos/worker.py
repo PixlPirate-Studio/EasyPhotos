@@ -221,13 +221,15 @@ class Worker:
             else:
                 entries.append(("thumbs", "info", f"Thumbnail made: {label}"))
         activity(entries)
+        n = scanner.pair_live_photos([aid for aid, cols in zip(ids, results) if cols.get("meta_status") == 1])
+        if n:
+            activity([("thumbs", "info", f"Matched {n} Live Photo{'s' if n > 1 else ''} with their photo")])
         self.meta_times.append((len(ids), time.time() - t0))
         self.meta_times = self.meta_times[-30:]
         rate = sum(x[0] for x in self.meta_times) / (sum(x[1] for x in self.meta_times) or 1) * 60
         set_status("thumbs", "running", f"Making thumbnails… last: {rel_label(paths.get(ids[-1]))}", rate=rate)
         self.dupes_dirty = True
         if left <= len(ids):
-            scanner.pair_live_photos()
             set_status("thumbs", "idle", "All thumbnails made")
         return True
 
@@ -366,6 +368,13 @@ class Worker:
     # ------------------------------------------------------------ loop
     def run(self):
         set_status("worker", "running", "Started")
+        try:
+            n = scanner.pair_live_photos()
+            if n:
+                log.info("Matched %d Live Photos with their photos", n)
+                activity([("thumbs", "info", f"Matched {n:,} Live Photos with their photos")])
+        except Exception as e:
+            log.warning("Live Photo matching failed: %s", e)
         while True:
             try:
                 did = self.handle_commands()

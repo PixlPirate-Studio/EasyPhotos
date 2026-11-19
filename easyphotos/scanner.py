@@ -203,21 +203,48 @@ def save_meta(asset_id: int, cols: dict) -> None:
     db.ex(f"UPDATE assets SET {', '.join(k + '=?' for k in keys)} WHERE id=?", [cols[k] for k in keys] + [asset_id])
 
 
-def pair_live_photos() -> int:
-    """Hides the short video half of iPhone Live Photos and links it to the photo."""
-    vids = db.q(
-        "SELECT id, library_id, folder, filename FROM assets WHERE kind='video' AND meta_status=1 AND is_live_part=0 "
-        "AND deleted_at IS NULL AND duration IS NOT NULL AND duration <= 4.5 AND ext IN ('.mov','.mp4')")
+LIVE_MAX_SECONDS = 6.0
+
+
+def _like_escape(v: str) -> str:
+    return v.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def pair_live_photos(video_ids=None) -> int:
+    """Hides the short video half of iPhone Live Photos and links it to its photo,
+    so the photo shows in the grid and the motion plays when you open it.
+    video_ids: only look at these (None = check every unpaired short video)."""
+    sql = ("SELECT id, library_id, folder, filename FROM assets WHERE kind='video' AND meta_status=1 AND is_live_part=0 "
+           "AND deleted_at IS NULL AND duration IS NOT NULL AND duration <= ? AND ext IN ('.mov','.mp4')")
+    args = [LIVE_MAX_SECONDS]
+    if video_ids is not None:
+        ids = [int(i) for i in video_ids]
+        if not ids:
+            return 0
+        sql += f" AND id IN ({','.join('?' * len(ids))})"
+        args += ids
     paired = 0
-    for v in vids:
+    for v in db.q(sql, args):
         stem = os.path.splitext(v["filename"])[0]
-        img = db.q1(
-            "SELECT id FROM assets WHERE library_id=? AND folder=? AND kind='image' AND deleted_at IS NULL "
-            "AND (filename LIKE ? ESCAPE '\\') AND live_video_id IS NULL LIMIT 1",
-            (v["library_id"], v["folder"], stem.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ".%"))
+        if stem.upper().endswith("_HEVC"):
+            stem = stem[:-5]
+        candidates = [stem]
+        if stem.upper().startswith("IMG_") and not stem.upper().startswith("IMG_E"):
+            candidates.append("IMG_E" + stem[4:])  # edited copy of the still
+        img = None
+        for cand in candidates:
+            img = db.q1(
+                "SELECT id FROM assets WHERE library_id=? AND folder=? AND kind='image' AND deleted_at IS NULL "
+                "AND filename LIKE ? ESCAPE '\\' AND live_video_id IS NULL "
+                "ORDER BY CASE ext WHEN '.heic' THEN 0 WHEN '.heif' THEN 0 ELSE 1 END LIMIT 1",
+                (v["library_id"], v["folder"], _like_escape(cand) + ".%"))
+            if img:
+                break
         if img:
-            db.ex("UPDATE assets SET live_video_id=? WHERE id=?", (v["id"], img["id"]))
-            db.ex("UPDATE assets SET is_live_part=1 WHERE id=?", (v["id"],))
+            with db.tx() as c:
+                c.execute("UPDATE assets SET live_video_id=? WHERE id=?", (v["id"], img["id"]))
+                c.execute("UPDATE assets SET is_live_part=1, face_status=2 WHERE id=?", (v["id"],))
+                c.execute("DELETE FROM dup_members WHERE asset_id=?", (v["id"],))
             paired += 1
     return paired
 

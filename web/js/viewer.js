@@ -122,6 +122,8 @@ class Viewer {
         const liveBtn = h('button', { class: 'btn small', style: { position: 'absolute', left: '10px', top: '10px', zIndex: 2, background: 'rgba(0,0,0,.55)' } }, icon('live'), 'LIVE');
         liveBtn.addEventListener('click', () => this.playLive());
         this.frame.append(liveBtn);
+        // Like on an iPhone: the motion plays once when you open it, then the photo stays.
+        this.imgEl.addEventListener('load', () => { if (this.item === it) this.playLive(); }, { once: true });
       }
     }
     try {
@@ -142,12 +144,18 @@ class Viewer {
 
   playLive() {
     const it = this.item;
-    const v = h('video', { autoplay: true, playsinline: true, muted: false, style: { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', background: '#000' } });
+    this.frame.querySelector('video.livevid')?.remove();
+    const v = h('video', { class: 'livevid', playsinline: true, preload: 'auto', style: { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', background: 'transparent', pointerEvents: 'none' } });
     let compat = false;
-    v.addEventListener('error', () => { if (!compat) { compat = true; v.src = `/api/assets/${it.id}/live?compat=1`; } });
+    v.addEventListener('error', () => {
+      if (!compat) { compat = true; v.src = `/api/assets/${it.id}/live?compat=1`; v.play().catch(() => {}); }
+      else v.remove();
+    });
     v.addEventListener('ended', () => v.remove());
     v.src = `/api/assets/${it.id}/live`;
     this.frame.append(v);
+    // Browsers may block sound until you've tapped the page; fall back to playing muted.
+    v.play().catch(() => { v.muted = true; v.play().catch(() => v.remove()); });
   }
 
   swipe() {
