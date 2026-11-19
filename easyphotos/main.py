@@ -69,6 +69,10 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    p = request.url.path
+    if p.startswith("/static/js/") or p.startswith("/static/css/"):
+        # Always check for a newer version after an update (cheap: unchanged files return 304).
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 

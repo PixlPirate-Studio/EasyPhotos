@@ -1,7 +1,8 @@
 // App start-up: sign-in screens, the shell (top bar, sidebar, phone tab bar) and routes.
 import { h, icon, api, toast, errToast, modal, faceUrl, debounce } from './ui.js';
 import { state } from './state.js';
-import { route, fallback, onRoute, start, go } from './router.js';
+import { route, fallback, onRoute, onPhoto, start, go } from './router.js';
+import { photoFromAddress } from './viewer.js';
 import * as V from './views.js';
 import * as A from './admin.js';
 
@@ -170,7 +171,7 @@ function shell() {
     });
     if (['/albums', '/tags', '/favorites', '/admin'].some(p => path.startsWith(p)) || path === '/more') tabbar.querySelector('[data-nav="#/more"]').classList.add('on');
   });
-  if (!routesReady) { registerRoutes(); start(); routesReady = true; } else { go(location.hash || '#/'); }
+  if (!routesReady) { registerRoutes(); onPhoto(photoFromAddress); start(); routesReady = true; } else { go(location.hash || '#/'); }
   if (u.is_admin) { pollStatus(); clearInterval(pollTimer); pollTimer = setInterval(pollStatus, 15000); }
   api('/api/admin/settings').then(s => { state.allowDelete = s.allow_delete; }).catch(() => { state.allowDelete = false; });
 }

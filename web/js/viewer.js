@@ -1,18 +1,38 @@
 // Full-screen photo viewer with details, faces, editing (admin) and face drawing.
 import { h, icon, api, previewUrl, faceUrl, fmtDateTime, fmtBytes, fmtDuration, placeText, toast, errToast, modal, confirmDialog, download, MONTHS_LONG } from './ui.js';
 import { state, loadLeaflet, TILE_URL, TILE_ATTR } from './state.js';
-import { go } from './router.js';
+import { go, hashWithPhoto } from './router.js';
 
 let current = null;
 
+// Firefox on iPhone (FxiOS) mishandles going "back" inside a page, which could trap
+// you in the viewer. There we never add a history step: the close button simply
+// takes the photo out of the address, and the browser's Back goes to the previous page.
+const SIMPLE_HISTORY = /FxiOS/i.test(navigator.userAgent);
+
 export function openViewer(opts) {
-  if (current) current.close();
+  if (current) current.close(true);
   current = new Viewer(opts);
   current.open();
 }
 
+// Called by the router when the address's ?photo= changes (back/forward, refresh, shared link).
+export async function photoFromAddress(photo) {
+  if (!photo) { if (current) current.close(true); return; }
+  if (current && String(current.item.id) === String(photo)) return;
+  try {
+    const d = await api(`/api/assets/${photo}`);
+    if (current) current.close(true);
+    current = new Viewer({ items: [{ id: d.id, k: d.kind === 'video' ? 'v' : 'i', v: d.v, l: d.live ? 1 : 0, w: d.width || 1, h: d.height || 1 }], index: 0, fromAddress: true });
+    current.open();
+  } catch (e) {
+    history.replaceState(null, '', hashWithPhoto(null));
+  }
+}
+
 class Viewer {
-  constructor({ items, index, grid }) {
+  constructor({ items, index, grid, fromAddress = false }) {
+    this.fromAddress = fromAddress;
     this.items = items;
     this.index = index;
     this.grid = grid;
@@ -30,19 +50,30 @@ class Viewer {
     document.body.append(this.root);
     document.body.style.overflow = 'hidden';
     document.addEventListener('keydown', this.onKey);
-    history.pushState({ viewer: true }, '');
-    this._pop = () => this.close(true);
-    window.addEventListener('popstate', this._pop);
+    // Put the photo in the address so the browser's Back button closes it.
+    this.pushed = false;
+    if (!this.fromAddress) {
+      if (SIMPLE_HISTORY) {
+        history.replaceState(null, '', hashWithPhoto(this.item.id));
+      } else {
+        history.pushState(null, '', hashWithPhoto(this.item.id));
+        this.pushed = true;
+      }
+    }
     this.show();
   }
 
-  close(fromPop = false) {
+  close(fromAddress = false) {
+    if (this.closed) return;
+    this.closed = true;
     document.removeEventListener('keydown', this.onKey);
-    window.removeEventListener('popstate', this._pop);
     this.root.remove();
     document.body.style.overflow = '';
-    current = null;
-    if (!fromPop && history.state && history.state.viewer) history.back();
+    if (current === this) current = null;
+    if (fromAddress) return;
+    // Take ?photo= back out of the address.
+    if (this.pushed) history.back();
+    else history.replaceState(null, '', hashWithPhoto(null));
   }
 
   onKey(e) {
@@ -64,6 +95,7 @@ class Viewer {
     this.index = ni;
     this.mode = 'info';
     this.setDrawing(false);
+    history.replaceState(null, '', hashWithPhoto(this.item.id));
     this.show();
   }
 
@@ -245,10 +277,10 @@ class Viewer {
       named.length ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
         h('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--text2)' } }, 'People in this photo'),
         h('div', { class: 'facelist' }, named.map(f => f.person_id && f.name
-          ? h('a', { href: `#/people/${f.person_id}`, onclick: () => this.close() }, h('img', { src: faceUrl(f.id), alt: '' }), f.name)
+          ? h('a', { href: `#/people/${f.person_id}`, onclick: () => this.close(true) }, h('img', { src: faceUrl(f.id), alt: '' }), f.name)
           : h('div', { class: 'unk', style: { cursor: 'pointer' }, onclick: () => this.nameFace(f) }, h('img', { src: faceUrl(f.id), alt: '' }), 'Who is this?')))) : null,
-      d.tags.length ? h('div', { class: 'row', style: { gap: '6px' } }, icon('tag'), d.tags.map(t => h('a', { class: 'chip', href: `#/tags/${t.id}`, onclick: () => this.close() }, t.name))) : null,
-      d.albums.length ? h('div', { class: 'row', style: { gap: '6px' } }, icon('album'), d.albums.map(a => h('a', { class: 'chip', href: `#/albums/${a.id}`, onclick: () => this.close() }, a.name))) : null,
+      d.tags.length ? h('div', { class: 'row', style: { gap: '6px' } }, icon('tag'), d.tags.map(t => h('a', { class: 'chip', href: `#/tags/${t.id}`, onclick: () => this.close(true) }, t.name))) : null,
+      d.albums.length ? h('div', { class: 'row', style: { gap: '6px' } }, icon('album'), d.albums.map(a => h('a', { class: 'chip', href: `#/albums/${a.id}`, onclick: () => this.close(true) }, a.name))) : null,
       placeText(d) || d.lat ? irow('map', placeText(d) || 'Location', d.lat ? `${d.lat.toFixed(4)}, ${d.lon.toFixed(4)}` : null) : null,
       d.lat ? this.minimap(d.lat, d.lon) : null,
       state.user.is_admin && d.path ? h('div', { class: 'mono muted', style: { wordBreak: 'break-all' } }, d.path) : null,
@@ -262,7 +294,7 @@ class Viewer {
       L.tileLayer(TILE_URL, { maxZoom: 18 }).addTo(m);
       L.circleMarker([lat, lon], { radius: 8, color: '#0E1014', weight: 2, fillColor: '#6E9BFF', fillOpacity: 1 }).addTo(m);
       setTimeout(() => m.invalidateSize(), 50);
-      box.addEventListener('click', () => { this.close(); go(`#/map?lat=${lat}&lon=${lon}`); });
+      box.addEventListener('click', () => { this.close(true); go(`#/map?lat=${lat}&lon=${lon}`); });
     }).catch(() => box.remove());
     return box;
   }
