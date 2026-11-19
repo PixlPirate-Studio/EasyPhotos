@@ -19,11 +19,13 @@ def asset_file(asset, lib=None) -> Path:
     return Path(lib["path"]) / asset["path"]
 
 
-def _walk(root: Path):
+def _walk(root: Path, stats: dict | None = None):
     """Yields (relative_path, size, mtime) for every photo/video under root."""
+    stats = stats if stats is not None else {}
     stack = [root]
     while stack:
         d = stack.pop()
+        stats["folders"] = stats.get("folders", 0) + 1
         try:
             with os.scandir(d) as it:
                 for e in it:
@@ -43,17 +45,24 @@ def _walk(root: Path):
                         rel = os.path.relpath(e.path, root)
                         yield rel.replace(os.sep, "/"), st.st_size, st.st_mtime
                     except OSError as err:
-                        log.debug("skip %s: %s", e.path, err)
+                        log.warning("Can't read file %s: %s", e.path, err)
+                        stats["unreadable"] = stats.get("unreadable", 0) + 1
         except OSError as err:
-            log.warning("cannot read folder %s: %s", d, err)
+            log.warning("Can't open folder %s: %s", d, err)
+            stats["unreadable"] = stats.get("unreadable", 0) + 1
 
 
 def scan_library(lib, progress=None) -> dict:
     root = library_root(lib)
-    stats = {"added": 0, "changed": 0, "removed": 0, "seen": 0}
+    stats = {"added": 0, "changed": 0, "removed": 0, "seen": 0, "folders": 0, "unreadable": 0, "missing": False}
     if not root.is_dir():
-        log.warning("Library folder missing: %s", root)
+        log.error("Library folder missing inside the container: %s (check the Path mapping in Unraid)", root)
+        stats["missing"] = True
         return stats
+    if not any(True for _ in os.scandir(root)):
+        log.warning("Library folder %s is empty. Is the Host Path in Unraid pointing at the right share?", root)
+    log.info("Scanning %s (%s)…", lib["name"], root)
+    last_progress = time.time()
     existing = {r["path"]: r for r in db.q(
         "SELECT id, path, size, mtime, deleted_at FROM assets WHERE library_id=?", (lib["id"],))}
     seen = set()
@@ -73,7 +82,7 @@ def scan_library(lib, progress=None) -> dict:
                 db.ex("DELETE FROM faces WHERE asset_id=? AND manual=0 AND confirmed=0", (aid,))
             batch_changed.clear()
 
-    for rel, size, mtime in _walk(root):
+    for rel, size, mtime in _walk(root, stats):
         seen.add(rel)
         stats["seen"] += 1
         old = existing.get(rel)
@@ -89,10 +98,17 @@ def scan_library(lib, progress=None) -> dict:
             stats["changed"] += 1
         if len(batch_new) + len(batch_changed) >= 500:
             flush()
-            if progress:
-                progress(stats)
+        if progress and time.time() - last_progress > 2:
+            last_progress = time.time()
+            progress(stats)
     flush()
 
+    if stats["seen"] == 0 and existing:
+        # Don't wipe the library if the folder suddenly looks empty (drive not mounted, etc.)
+        log.error("%s looks empty now but had %d photos before. Skipping removal in case the drive isn't mounted.",
+                  root, len(existing))
+        db.ex("UPDATE libraries SET last_scan_at=? WHERE id=?", (time.time(), lib["id"]))
+        return stats
     gone = [r["id"] for p, r in existing.items() if p not in seen and r["deleted_at"] is None]
     for aid in gone:
         media.remove_derivatives(aid)

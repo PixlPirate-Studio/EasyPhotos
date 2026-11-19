@@ -272,6 +272,6 @@ export async function more(el) {
       link('#/admin/library', 'folder', 'Folders & scanning'), link('#/admin/faces', 'scan', 'Faces'), link('#/admin/duplicates', 'dup', 'Duplicates'),
       link('#/admin/hidden', 'eyeoff', 'Hidden'), link('#/admin/recycle', 'trash', 'Recycle Bin'),
       h('div', { class: 'label hint', style: { marginTop: '10px' } }, 'ADMIN'),
-      link('#/admin/users', 'users', 'Users'), link('#/admin/apikeys', 'key', 'API keys'), link('#/admin/settings', 'settings', 'Settings'),
+      link('#/admin/users', 'users', 'Users'), link('#/admin/apikeys', 'key', 'API keys'), link('#/admin/settings', 'settings', 'Settings'), link('#/admin/logs', 'file', 'Logs'),
     ] : null));
 }

@@ -43,7 +43,17 @@ export async function library(el) {
     const chip = (text) => h('span', { class: 'badge green', style: { padding: '6px 12px', fontWeight: 500, fontSize: '13px' } }, text);
     const facesDone = c.images ? Math.max(0, c.images - c.faces_pending) : 0;
     const pct = c.images ? Math.round(facesDone / c.images * 100) : 0;
-    if (!j.worker_alive) card.append(h('div', { class: 'hint', style: { color: 'var(--orange)' } }, 'The background worker is starting…'));
+    if (!j.worker_alive) card.append(h('div', { class: 'hint', style: { color: 'var(--orange)' } }, 'The background worker is starting… If this stays here, check Logs.'));
+    const sc = j.status.scan;
+    if (sc) {
+      const color = sc.state === 'error' ? 'var(--orange)' : sc.state === 'running' ? 'var(--text)' : 'var(--text2)';
+      card.append(h('div', { class: 'row', style: { fontSize: '14px', color } },
+        h('span', { class: 'dot' + (sc.state === 'running' ? ' busy' : ''), style: sc.state === 'error' ? { background: 'var(--orange)' } : null }),
+        h('span', { class: 'grow' }, sc.state === 'running' ? sc.message : `Last scan: ${sc.message}`, sc.state !== 'running' ? h('span', { class: 'hint' }, ` · ${fmtAgo(sc.updated_at).toLowerCase()}`) : null),
+        sc.state === 'error' ? h('a', { href: '#/admin/logs?problems=1' }, 'See logs →') : null));
+    } else {
+      card.append(h('div', { class: 'row hint' }, h('span', { class: 'dot' }), 'Waiting for the first scan…'));
+    }
     if (c.meta_pending) {
       card.append(h('div', { class: 'row' }, h('span', { class: 'dot busy' }), h('b', {}, 'Making thumbnails'), h('span', { class: 'hint' }, `${num(c.meta_pending)} of ${num(c.total)} left`)),
         h('div', { class: 'progress' }, h('div', { style: { width: `${Math.round((1 - c.meta_pending / Math.max(1, c.total)) * 100)}%` } })));
@@ -120,7 +130,16 @@ export async function library(el) {
   const origDraw = drawJobs;
   drawJobs = (j) => { jobsCache = j; origDraw(j); }; // eslint-disable-line no-func-assign
   await refresh();
-  const t = setInterval(async () => { try { const j = await api('/api/admin/jobs'); drawJobs(j); } catch (e) { /* ignore */ } }, 8000);
+  const t = setInterval(async () => {
+    try {
+      const j = await api('/api/admin/jobs');
+      drawJobs(j);
+      const busy = (j.status.scan && j.status.scan.state === 'running') || j.counts.meta_pending;
+      if (busy || wasBusy) drawLibs(await api('/api/admin/libraries'));
+      wasBusy = busy;
+    } catch (e) { /* ignore */ }
+  }, 5000);
+  let wasBusy = true;
   return () => clearInterval(t);
 }
 
@@ -401,6 +420,46 @@ export async function recycle(el) {
       })))));
   }
   load();
+}
+
+// ---------------------------------------------------------------- Logs
+
+export async function logs(el, p, q) {
+  let which = q.which || 'worker', problems = q.problems === '1', paused = false;
+  const pre = h('pre', { class: 'mono', style: { margin: 0, padding: '14px', background: 'var(--bg2)', border: '1px solid var(--line)', borderRadius: '12px', overflow: 'auto', maxHeight: 'calc(100vh - 260px)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55 } });
+  const fileHint = h('span', { class: 'hint' });
+  const tabs = h('div', { class: 'tabs' });
+  const probBox = h('input', { type: 'checkbox', checked: problems, onchange: () => { problems = probBox.checked; load(); } });
+  const pauseBox = h('input', { type: 'checkbox', onchange: () => { paused = pauseBox.checked; } });
+  el.append(head('Logs', 'What EasyPhotos has been doing. Newest at the bottom. Refreshes every few seconds.'),
+    tabs, h('div', { class: 'row', style: { margin: '12px 0' } },
+      h('label', { class: 'check' }, probBox, 'Only show problems'),
+      h('label', { class: 'check' }, pauseBox, 'Pause auto-refresh'),
+      h('span', { class: 'grow' }), fileHint), pre);
+  const drawTabs = () => {
+    tabs.innerHTML = '';
+    [['worker', 'Background work (scanning, thumbnails, faces)'], ['web', 'Web server']].forEach(([k, l]) =>
+      tabs.append(h('button', { class: which === k ? 'on' : '', onclick: () => { which = k; drawTabs(); load(); } }, l)));
+  };
+  async function load() {
+    try {
+      const r = await api(`/api/admin/logs?which=${which}&lines=500&problems=${problems ? 1 : 0}`);
+      fileHint.textContent = r.file;
+      const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
+      pre.innerHTML = '';
+      if (!r.lines.length) pre.append(problems ? 'No problems logged. 👍'.replace(' 👍', '') : 'Nothing logged yet.');
+      r.lines.forEach(line => {
+        const bad = / ERROR |Traceback/.test(line), warn = / WARNING /.test(line);
+        pre.append(h('div', { style: { color: bad ? 'var(--red)' : warn ? 'var(--orange)' : 'var(--text2)' } }, line));
+      });
+      if (atBottom || !pre.dataset.loaded) pre.scrollTop = pre.scrollHeight;
+      pre.dataset.loaded = '1';
+    } catch (e) { errToast(e); }
+  }
+  drawTabs();
+  await load();
+  const t = setInterval(() => { if (!paused) load(); }, 4000);
+  return () => clearInterval(t);
 }
 
 // ---------------------------------------------------------------- Users

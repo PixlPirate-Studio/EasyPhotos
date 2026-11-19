@@ -95,8 +95,17 @@ class Worker:
                 self.force_scan.discard(lib["id"])
                 set_status("scan", "running", f"Looking for new photos in {lib['name']}…")
                 stats = scanner.scan_library(lib, progress=lambda st, n=lib["name"]: set_status(
-                    "scan", "running", f"Looking for new photos in {n}… {st['seen']:,} files checked"))
-                set_status("scan", "idle", f"{lib['name']}: {stats['added']:,} new, {stats['changed']:,} changed, {stats['removed']:,} removed")
+                    "scan", "running", f"Looking for new photos in {n}… {st['seen']:,} photos/videos found in {st['folders']:,} folders"))
+                if stats["missing"]:
+                    set_status("scan", "error", f"{lib['name']}: folder {lib['path']} was not found inside the container. Check the Path mapping in Unraid.")
+                else:
+                    msg = (f"{lib['name']}: found {stats['seen']:,} photos/videos in {stats['folders']:,} folders "
+                           f"({stats['added']:,} new, {stats['changed']:,} changed, {stats['removed']:,} removed)")
+                    if stats["unreadable"]:
+                        msg += f". {stats['unreadable']:,} files/folders couldn't be read (permissions?) - see Logs"
+                    elif stats["seen"] == 0:
+                        msg += ". The folder looks empty - is the Host Path in Unraid right?"
+                    set_status("scan", "error" if (stats["unreadable"] or stats["seen"] == 0) else "idle", msg)
                 if stats["added"] or stats["changed"] or stats["removed"]:
                     self.dupes_dirty = True
                 did = True

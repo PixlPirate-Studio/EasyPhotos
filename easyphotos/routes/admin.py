@@ -451,6 +451,30 @@ def delete_apikey(kid: int, user: User = Depends(admin_user)):
     return {"ok": True}
 
 
+# ------------------------------------------------------------ logs
+
+def _tail(path: Path, max_lines: int) -> list[str]:
+    if not path.exists():
+        return []
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        f.seek(max(0, size - 400_000))
+        data = f.read().decode("utf-8", errors="replace")
+    return data.splitlines()[-max_lines:]
+
+
+@router.get("/logs")
+def logs(which: str = "worker", lines: int = 400, problems: int = 0, user: User = Depends(admin_user)):
+    """The newest lines of the background worker or web log."""
+    name = "web.log" if which == "web" else "worker.log"
+    out = _tail(config.LOG_DIR / name, max(10, min(lines, 3000)) * (5 if problems else 1))
+    if problems:
+        out = [ln for ln in out if " WARNING " in ln or " ERROR " in ln or "Traceback" in ln or "Error" in ln]
+    out = out[-max(10, min(lines, 3000)):]
+    return {"file": str(config.LOG_DIR / name), "lines": out}
+
+
 # ------------------------------------------------------------ storage & backup
 
 def _dir_size(p: Path, limit_seconds: float = 5.0) -> int | None:

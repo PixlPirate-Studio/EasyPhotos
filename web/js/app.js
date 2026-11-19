@@ -152,6 +152,7 @@ function shell() {
       navLink('#/admin/users', 'users', 'Users'),
       navLink('#/admin/apikeys', 'key', 'API keys'),
       navLink('#/admin/settings', 'settings', 'Settings'),
+      navLink('#/admin/logs', 'file', 'Logs'),
     ] : null);
   tabbar = h('nav', { class: 'tabbar', 'aria-label': 'Main' },
     navLink('#/', 'photos', 'Photos'),
@@ -297,6 +298,7 @@ function registerRoutes() {
   route('/admin/users', adminOnly(A.users));
   route('/admin/apikeys', adminOnly(A.apikeys));
   route('/admin/settings', adminOnly(A.settings));
+  route('/admin/logs', adminOnly(A.logs));
   fallback(view((el) => el.append(h('div', { class: 'empty' }, 'Page not found.'))));
 }
 

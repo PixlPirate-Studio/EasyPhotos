@@ -115,7 +115,14 @@ def spa(full_path: str):
 
 
 def run():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [web] %(levelname)s %(message)s")
+    config.ensure_dirs()
+    handlers = [logging.StreamHandler(sys.stdout)]
+    try:
+        from logging.handlers import RotatingFileHandler
+        handlers.append(RotatingFileHandler(config.LOG_DIR / "web.log", maxBytes=2_000_000, backupCount=2))
+    except Exception:
+        pass
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [web] %(levelname)s %(message)s", handlers=handlers)
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=config.PORT, proxy_headers=True, forwarded_allow_ips="*", log_level="warning")
 
