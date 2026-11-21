@@ -1,7 +1,7 @@
 // Main pages everyone can see.
 import { h, icon, api, modal, nameSafely, thumbUrl, faceUrl, img, personFace, toast, errToast, promptDialog, confirmDialog, MONTHS_LONG, DAYS, num, fmtDay } from './ui.js';
 import { PhotoGrid } from './grid.js';
-import { state, loadLeaflet, TILE_URL, TILE_ATTR } from './state.js';
+import { state, loadLeaflet, TILE_URL, TILE_ATTR, TILE_OPTS } from './state.js';
 import { openViewer } from './viewer.js';
 import { go } from './router.js';
 
@@ -115,7 +115,7 @@ export async function map(el, p, q) {
     img(thumbUrl(pl.cover)), h('div', { style: { display: 'flex', flexDirection: 'column', minWidth: 0 } },
       h('b', {}, [pl.city, pl.state].filter(Boolean).join(', ')), h('span', { class: 'hint' }, `${num(pl.n)} photos`)))));
   const m = L.map(mapBox, { worldCopyJump: true, preferCanvas: true });
-  L.tileLayer(TILE_URL, { maxZoom: 19, attribution: TILE_ATTR }).addTo(m);
+  L.tileLayer(TILE_URL, { ...TILE_OPTS, maxZoom: 19, attribution: TILE_ATTR }).addTo(m);
   const cluster = L.markerClusterGroup({
     showCoverageOnHover: false, maxClusterRadius: 60, chunkedLoading: true,
     iconCreateFunction: (c) => {

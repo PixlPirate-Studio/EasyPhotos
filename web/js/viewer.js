@@ -1,6 +1,6 @@
 // Full-screen photo viewer with details, faces, editing (admin) and face drawing.
 import { h, icon, api, nameSafely, previewUrl, faceUrl, fmtDateTime, fmtBytes, fmtDuration, placeText, toast, errToast, modal, confirmDialog, download, MONTHS_LONG } from './ui.js';
-import { state, loadLeaflet, TILE_URL, TILE_ATTR } from './state.js';
+import { state, loadLeaflet, TILE_URL, TILE_ATTR, TILE_OPTS } from './state.js';
 import { go, hashWithPhoto } from './router.js';
 
 let current = null;
@@ -290,8 +290,8 @@ class Viewer {
   minimap(lat, lon) {
     const box = h('div', { class: 'minimap' });
     loadLeaflet().then(L => {
-      const m = L.map(box, { zoomControl: false, attributionControl: false, dragging: false, scrollWheelZoom: false, doubleClickZoom: false, touchZoom: false, keyboard: false }).setView([lat, lon], 12);
-      L.tileLayer(TILE_URL, { maxZoom: 18 }).addTo(m);
+      const m = L.map(box, { zoomControl: false, attributionControl: true, dragging: false, scrollWheelZoom: false, doubleClickZoom: false, touchZoom: false, keyboard: false }).setView([lat, lon], 12);
+      L.tileLayer(TILE_URL, { ...TILE_OPTS, maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(m);
       L.circleMarker([lat, lon], { radius: 8, color: '#0E1014', weight: 2, fillColor: '#6E9BFF', fillOpacity: 1 }).addTo(m);
       setTimeout(() => m.invalidateSize(), 50);
       box.addEventListener('click', () => { this.close(true); go(`#/map?lat=${lat}&lon=${lon}`); });
@@ -498,7 +498,7 @@ export function pickOnMap(lat, lon) {
     });
     loadLeaflet().then(L => {
       const m = L.map(box).setView(lat ? [lat, lon] : [39.8, -86.15], lat ? 13 : 5);
-      L.tileLayer(TILE_URL, { maxZoom: 19, attribution: TILE_ATTR }).addTo(m);
+      L.tileLayer(TILE_URL, { ...TILE_OPTS, maxZoom: 19, attribution: TILE_ATTR }).addTo(m);
       let mk = lat ? L.marker([lat, lon]).addTo(m) : null;
       m.on('click', (e) => {
         chosen = { lat: +e.latlng.lat.toFixed(6), lon: +e.latlng.lng.toFixed(6) };

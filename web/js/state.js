@@ -17,5 +17,7 @@ export function loadLeaflet() {
   return leafletPromise;
 }
 
-export const TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+export const TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+// OpenStreetMap needs to know which site asks for map pictures; only the site address is sent.
+export const TILE_OPTS = { referrerPolicy: 'strict-origin-when-cross-origin', crossOrigin: false };
 export const TILE_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';

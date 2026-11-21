@@ -77,7 +77,8 @@ app = FastAPI(title="EasyPhotos", version=__version__, lifespan=lifespan, docs_u
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("Referrer-Policy", "same-origin")
+    # Other sites only ever learn the site address (needed by the OpenStreetMap map servers), never the page.
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     p = request.url.path
     if p.startswith("/static/js/") or p.startswith("/static/css/"):
