@@ -614,6 +614,144 @@ export async function emptyFolders(el) {
   }
 }
 
+// ---------------------------------------------------------------- Non-photo files
+export async function otherFiles(el, p, q) {
+  let tab = q.tab === 'removed' ? 'removed' : 'found';
+  let found = null; // last scan result
+  const selected = new Map(); // key -> {library_id, rel}
+  const tabs = h('div', { class: 'tabs' });
+  const body = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '18px', marginTop: '14px' } });
+  const selBar = h('div', { class: 'card hidden dupbar' });
+  const findBtn = h('button', { class: 'btn primary', onclick: () => look() }, 'Look for non-photo files');
+  el.append(head('Library › Non-photo files', 'Finds files that aren’t photos or videos, like .DS_Store, temp files and text files. Photo and video files of any kind are never listed.', [findBtn]),
+    tabs, body, selBar);
+
+  function drawTabs(removedCount) {
+    tabs.innerHTML = '';
+    [['found', 'Found'], ['removed', `Removed${removedCount != null ? ` · ${num(removedCount)}` : ''}`]].forEach(([k, label]) =>
+      tabs.append(h('button', { class: tab === k ? 'on' : '', onclick: () => { tab = k; selected.clear(); drawSel(); k === 'found' ? drawFound() : drawRemoved(); drawTabs(removedCount); } }, label)));
+    findBtn.classList.toggle('hidden', tab !== 'found');
+  }
+
+  function drawSel() {
+    selBar.innerHTML = '';
+    selBar.classList.toggle('hidden', !selected.size);
+    if (!selected.size) return;
+    const n = selected.size;
+    const clear = h('button', { class: 'btn small ghost', onclick: () => { selected.clear(); body.querySelectorAll('input[type=checkbox]').forEach(c => { c.checked = false; }); drawSel(); } }, 'Clear');
+    if (tab === 'found') {
+      const bytes = [...selected.values()].reduce((s, x) => s + (x.size || 0), 0);
+      selBar.append(h('b', { class: 'grow' }, `${num(n)} file${n > 1 ? 's' : ''} selected · ${fmtBytes(bytes)}`),
+        h('button', { class: 'btn small warn', onclick: removeSelected }, 'Move to Recycle Bin…'), clear);
+    } else {
+      selBar.append(h('b', { class: 'grow' }, `${num(n)} file${n > 1 ? 's' : ''} selected`),
+        h('button', { class: 'btn small primary', onclick: async () => {
+          try { const r = await post('/api/admin/other-files/restore', { ids: [...selected.keys()] }); if (r.errors.length) toast(r.errors[0], true); toast(`${num(r.restored)} put back where they were.`); selected.clear(); drawSel(); drawRemoved(); } catch (e) { errToast(e); }
+        } }, 'Restore'),
+        h('button', { class: 'btn small warn', onclick: async () => {
+          if (!await confirmDialog({ title: `Delete ${num(n)} file${n > 1 ? 's' : ''} forever?`, text: 'This can’t be undone.', confirmLabel: 'Delete forever', danger: true })) return;
+          try { const r = await post('/api/admin/other-files/purge', { ids: [...selected.keys()] }); toast(`${num(r.purged)} deleted forever.`); selected.clear(); drawSel(); drawRemoved(); } catch (e) { errToast(e); }
+        } }, 'Delete forever'), clear);
+    }
+  }
+
+  async function removeSelected() {
+    const n = selected.size;
+    if (!await confirmDialog({ title: `Move ${num(n)} file${n > 1 ? 's' : ''} to the Recycle Bin?`,
+      text: 'Each file is checked again first, and anything that looks like a photo or video is left alone. You can put them back from the Removed tab until you empty the Recycle Bin.',
+      confirmLabel: 'Move to Recycle Bin', danger: true })) return;
+    try {
+      const r = await post('/api/admin/other-files/remove', { items: [...selected.values()].map(x => ({ library_id: x.library_id, rel: x.rel })) });
+      if (r.errors.length) toast(r.errors[0], true);
+      toast(`Moved ${num(r.moved)} file${r.moved === 1 ? '' : 's'} to the Recycle Bin.`);
+      look();
+    } catch (e) { errToast(e); }
+  }
+
+  async function look() {
+    selected.clear(); drawSel();
+    findBtn.disabled = true; findBtn.textContent = 'Looking…';
+    body.innerHTML = '';
+    body.append(h('div', { class: 'empty' }, icon('doc'), 'Looking through every folder… this can take a little while on big libraries.'));
+    try { found = await api('/api/admin/other-files'); } catch (e) { errToast(e); body.innerHTML = ''; return; }
+    finally { findBtn.disabled = false; findBtn.textContent = 'Look again'; }
+    drawTabs(found.removed);
+    drawFound();
+  }
+
+  function drawFound() {
+    body.innerHTML = '';
+    if (!found) { body.append(h('div', { class: 'empty' }, icon('doc'), 'Press “Look for non-photo files” to check all your libraries.')); return; }
+    const all = [];
+    found.libraries.forEach(lib => lib.files.forEach(f => all.push({ ...f, lib })));
+    const total = all.length, bytes = all.reduce((s, f) => s + f.size, 0);
+    body.append(h('div', { class: 'hint' }, total ? `Found ${num(total)} non-photo file${total > 1 ? 's' : ''} (${fmtBytes(bytes)}) in ${found.seconds} s.` : `Nothing found. Your libraries only have photos and videos (checked in ${found.seconds} s).`));
+    found.libraries.filter(l => !l.writable && l.files.length).forEach(l => body.append(h('div', { class: 'hint', style: { color: 'var(--orange)' } }, `${l.name} is read-only, so its files can be seen but not removed. Change its folder mapping in Unraid to Read/Write if you want to.`)));
+    found.libraries.filter(l => l.capped).forEach(l => body.append(h('div', { class: 'hint' }, `${l.name}: showing the first 20,000. Remove some and look again to see the rest.`)));
+    Object.keys(found.kinds).forEach(kind => {
+      const files = all.filter(f => f.kind === kind);
+      if (!files.length) return;
+      const keyOf = f => `${f.lib.id}:${f.rel}`;
+      const rows = h('div', { style: { display: 'flex', flexDirection: 'column' } });
+      let shown = 0;
+      const boxes = [];
+      const drawMore = () => {
+        files.slice(shown, shown + 300).forEach(f => {
+          const key = keyOf(f);
+          const cb = h('input', { type: 'checkbox', disabled: !f.lib.writable, checked: selected.has(key), style: { width: '20px', height: '20px', accentColor: 'var(--accent)', flex: 'none' },
+            onchange: () => { cb.checked ? selected.set(key, { library_id: f.lib.id, rel: f.rel, size: f.size }) : selected.delete(key); drawSel(); } });
+          boxes.push(cb);
+          rows.append(h('label', { class: 'check', style: { alignItems: 'flex-start', padding: '9px 0', borderTop: '1px solid var(--line)', minHeight: 0 } }, cb,
+            h('div', { style: { minWidth: 0 } },
+              h('div', { class: 'mono', style: { wordBreak: 'break-all' } }, f.rel),
+              h('div', { class: 'hint' }, `${f.lib.name} · ${fmtBytes(f.size)} · ${fmtAgo(f.mtime)}`))));
+        });
+        shown = Math.min(files.length, shown + 300);
+        moreBtn.classList.toggle('hidden', shown >= files.length);
+        moreBtn.textContent = `Show more (${num(files.length - shown)} left)`;
+      };
+      const moreBtn = h('button', { class: 'btn small', style: { marginTop: '10px', alignSelf: 'center' }, onclick: drawMore });
+      const listWrap = h('div', { class: 'hidden', style: { display: 'flex', flexDirection: 'column' } }, rows, moreBtn);
+      const toggle = h('button', { class: 'btn small ghost' }, 'Show files');
+      toggle.onclick = () => { const open = listWrap.classList.toggle('hidden'); toggle.textContent = open ? 'Show files' : 'Hide files'; if (!open && !shown) drawMore(); };
+      const kBytes = files.reduce((s, f) => s + f.size, 0);
+      body.append(h('section', { class: 'card' },
+        h('div', { class: 'row' },
+          h('div', { class: 'grow' }, h('b', {}, found.kinds[kind]), h('div', { class: 'hint' }, `${num(files.length)} file${files.length > 1 ? 's' : ''} · ${fmtBytes(kBytes)}`)),
+          toggle,
+          h('button', { class: 'btn small', onclick: () => { files.forEach(f => { if (f.lib.writable) selected.set(keyOf(f), { library_id: f.lib.id, rel: f.rel, size: f.size }); }); boxes.forEach(c => { if (!c.disabled) c.checked = true; }); drawSel(); } }, 'Select all')),
+        kind === 'apple' ? h('div', { class: 'hint' }, 'These hold the edits you made on your iPhone (crops, filters). EasyPhotos doesn’t use them, but other apps might.') : null,
+        kind === 'docs' || kind === 'other' ? h('div', { class: 'hint' }, 'Have a quick look at these before removing them, in case something is worth keeping.') : null,
+        listWrap));
+    });
+  }
+
+  async function drawRemoved() {
+    body.innerHTML = '';
+    let r;
+    try { r = await api('/api/admin/other-files/removed'); } catch (e) { return errToast(e); }
+    drawTabs(r.files.length);
+    if (!r.files.length) { body.append(h('div', { class: 'empty' }, icon('trash'), 'No removed non-photo files.')); return; }
+    const boxes = [];
+    body.append(h('div', { class: 'row' },
+      h('span', { class: 'hint grow' }, 'These are in the Recycle Bin. Emptying the Recycle Bin deletes them for good.'),
+      h('button', { class: 'btn small', onclick: () => { r.files.forEach(f => selected.set(f.id, f)); boxes.forEach(c => { c.checked = true; }); drawSel(); } }, 'Select all')));
+    const rows = h('section', { class: 'card', style: { gap: 0 } });
+    r.files.forEach(f => {
+      const cb = h('input', { type: 'checkbox', style: { width: '20px', height: '20px', accentColor: 'var(--accent)', flex: 'none' },
+        onchange: () => { cb.checked ? selected.set(f.id, f) : selected.delete(f.id); drawSel(); } });
+      boxes.push(cb);
+      rows.append(h('label', { class: 'check', style: { alignItems: 'flex-start', padding: '9px 0', borderTop: '1px solid var(--line)', minHeight: 0 } }, cb,
+        h('div', { style: { minWidth: 0 } }, h('div', { class: 'mono', style: { wordBreak: 'break-all' } }, f.path),
+          h('div', { class: 'hint' }, `${f.library} · ${fmtBytes(f.size)} · removed ${fmtAgo(f.deleted_at)}`))));
+    });
+    body.append(rows);
+  }
+
+  drawTabs(null);
+  if (tab === 'found') drawFound(); else drawRemoved();
+}
+
 // ---------------------------------------------------------------- Hidden & Recycle Bin
 
 export async function hidden(el) {
@@ -631,7 +769,7 @@ export async function recycle(el) {
   } }, icon('restore'), 'Restore selected');
   const headEl = head('Recycle Bin', 'Loading…', [restoreBtn, h('button', { class: 'btn danger', onclick: async () => {
     if (!await confirmDialog({ title: 'Permanently delete everything in the Recycle Bin?', text: 'This can’t be undone. The files will be gone from your server for good, along with their face names and tags.', confirmLabel: 'Delete forever', danger: true, typeWord: 'EMPTY' })) return;
-    try { const r = await post('/api/admin/recycle/empty', { confirm: 'EMPTY' }); toast(`${r.purged} deleted forever.`); load(); } catch (e) { errToast(e); }
+    try { const r = await post('/api/admin/recycle/empty', { confirm: 'EMPTY' }); toast(`${r.purged + (r.other_purged || 0)} deleted forever.`); load(); } catch (e) { errToast(e); }
   } }, 'Empty Recycle Bin…')]);
   el.append(headEl, body);
   async function load() {
@@ -639,7 +777,10 @@ export async function recycle(el) {
     const r = await api('/api/admin/recycle?limit=500');
     headEl.querySelector('.sub').textContent = `${num(r.count)} photos · ${fmtBytes(r.bytes)}. Restore puts each one back in its original folder.`;
     body.innerHTML = '';
-    if (!r.items.length) { body.append(h('div', { class: 'empty' }, icon('trash'), 'The Recycle Bin is empty.')); return; }
+    const others = await api('/api/admin/other-files/removed').catch(() => ({ files: [] }));
+    if (others.files.length) body.append(h('a', { class: 'card', href: '#/admin/other-files?tab=removed', style: { flexDirection: 'row', alignItems: 'center', marginBottom: '14px', color: 'var(--text)' } },
+      icon('doc'), h('span', { class: 'grow' }, `Also in the bin: ${num(others.files.length)} non-photo file${others.files.length > 1 ? 's' : ''} (${fmtBytes(others.files.reduce((s, f) => s + f.size, 0))})`), icon('next')));
+    if (!r.items.length) { body.append(h('div', { class: 'empty' }, icon('trash'), others.files.length ? 'No photos in the Recycle Bin.' : 'The Recycle Bin is empty.')); return; }
     const updateBtn = () => { restoreBtn.disabled = !sel.size; restoreBtn.lastChild.textContent = sel.size ? `Restore selected (${sel.size})` : 'Restore selected'; };
     body.append(h('div', { class: 'card scrollx', style: { padding: '4px 0' } }, h('table', { class: 'table' },
       h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, ''), h('th', {}, 'File'), h('th', {}, 'Was in'), h('th', {}, 'Deleted'), h('th', {}, ''))),

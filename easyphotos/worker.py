@@ -416,6 +416,9 @@ class Worker:
             return
         self.last_daily = time.time()
         n = recycle.auto_empty(int(s["recycle_auto_days"]))
+        if int(s["recycle_auto_days"]) > 0:
+            from . import otherfiles
+            n += otherfiles.purge(older_than=time.time() - int(s["recycle_auto_days"]) * 86400)
         if n:
             log.info("Emptied %d old items from the Recycle Bin", n)
         db.ex("DELETE FROM sessions WHERE expires_at < ?", (time.time(),))

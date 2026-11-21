@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from .. import config, db, emptydirs, recycle, settings
+from .. import config, db, emptydirs, otherfiles, recycle, settings
 from ..security import ROLES, User, admin_user, audit
 from .common import ids_param
 
@@ -489,6 +489,62 @@ def remove_empty_folders(body: dict, user: User = Depends(admin_user)):
     return {"ok": not errors, "removed": removed, "errors": list(dict.fromkeys(errors))[:10]}
 
 
+@router.get("/other-files")
+def other_files(user: User = Depends(admin_user)):
+    """Looks through every library for files that are not photos or videos."""
+    started = time.time()
+    out = []
+    for r in db.q("SELECT * FROM libraries ORDER BY name"):
+        p = Path(r["path"])
+        files = otherfiles.find(r["path"]) if p.is_dir() else []
+        out.append({"id": r["id"], "name": r["name"], "exists": p.is_dir(),
+                    "writable": os.access(p, os.W_OK) if p.is_dir() else False, "files": files,
+                    "capped": len(files) >= 20000})
+    removed = db.val("SELECT COUNT(*) FROM other_recycle", default=0)
+    return {"libraries": out, "kinds": otherfiles.KINDS, "removed": removed, "seconds": round(time.time() - started, 1)}
+
+
+@router.post("/other-files/remove")
+def remove_other_files(body: dict, user: User = Depends(admin_user)):
+    libs = {r["id"]: r for r in db.q("SELECT * FROM libraries")}
+    moved, errors = 0, []
+    for it in (body.get("items") or [])[:20000]:
+        lib = libs.get(int(it.get("library_id") or 0))
+        rel = str(it.get("rel") or "")
+        if not lib or not rel:
+            continue
+        err = otherfiles.remove(lib, rel)
+        if err:
+            errors.append(err)
+        else:
+            moved += 1
+    audit(None, user, "moved %s non-photo file(s) to the Recycle Bin", moved)
+    return {"ok": not errors, "moved": moved, "errors": list(dict.fromkeys(errors))[:10]}
+
+
+@router.get("/other-files/removed")
+def removed_other_files(user: User = Depends(admin_user)):
+    rows = db.q("SELECT o.id, o.path, o.size, o.kind, o.deleted_at, l.name AS library FROM other_recycle o "
+                "JOIN libraries l ON l.id=o.library_id ORDER BY o.deleted_at DESC LIMIT 5000")
+    return {"files": [dict(r) for r in rows], "kinds": otherfiles.KINDS}
+
+
+@router.post("/other-files/restore")
+def restore_other_files(body: dict, user: User = Depends(admin_user)):
+    ids = [int(x) for x in body.get("ids") or []]
+    res = otherfiles.restore(ids) if ids else {"restored": 0, "errors": []}
+    audit(None, user, "restored %s non-photo file(s)", res["restored"])
+    return res
+
+
+@router.post("/other-files/purge")
+def purge_other_files(body: dict, user: User = Depends(admin_user)):
+    ids = [int(x) for x in body.get("ids") or []]
+    n = otherfiles.purge(ids)
+    audit(None, user, "deleted %s non-photo file(s) for good", n)
+    return {"purged": n}
+
+
 @router.get("/recycle")
 def recycle_list(offset: int = 0, limit: int = 200, user: User = Depends(admin_user)):
     rows = db.q("SELECT a.id, a.filename, a.path, a.folder, a.size, a.deleted_at, a.thumb_ver, a.kind, l.name AS library, l.path AS lib_path "
@@ -520,7 +576,8 @@ def recycle_empty(body: dict, user: User = Depends(admin_user)):
         raise HTTPException(400, "Type EMPTY to confirm.")
     ids = [r["id"] for r in db.q("SELECT id FROM assets WHERE deleted_at IS NOT NULL")]
     res = recycle.purge_assets(ids)
-    audit(None, user, "emptied the Recycle Bin (%d photos deleted for good)", res["purged"])
+    res["other_purged"] = otherfiles.purge()
+    audit(None, user, "emptied the Recycle Bin (%d photos and %d other files deleted for good)", res["purged"], res["other_purged"])
     return res
 
 

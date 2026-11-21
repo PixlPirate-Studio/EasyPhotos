@@ -147,6 +147,7 @@ function shell() {
       navLink('#/admin/faces', 'scan', 'Faces', h('span', { class: 'badge orange hidden', id: 'faces-badge' })),
       navLink('#/admin/duplicates', 'dup', 'Duplicates', h('span', { class: 'badge hidden', id: 'dup-badge' })),
       navLink('#/admin/empty-folders', 'folder', 'Empty folders'),
+      navLink('#/admin/other-files', 'doc', 'Non-photo files'),
       navLink('#/admin/hidden', 'eyeoff', 'Hidden'),
       navLink('#/admin/recycle', 'trash', 'Recycle Bin'),
       h('div', { class: 'sep' }),
@@ -298,6 +299,7 @@ function registerRoutes() {
   route('/admin/hidden', adminOnly(A.hidden));
   route('/admin/recycle', adminOnly(A.recycle));
   route('/admin/empty-folders', adminOnly(A.emptyFolders));
+  route('/admin/other-files', adminOnly(A.otherFiles));
   route('/admin/users', adminOnly(A.users));
   route('/admin/apikeys', adminOnly(A.apikeys));
   route('/admin/settings', adminOnly(A.settings));

@@ -210,6 +210,16 @@ CREATE TABLE IF NOT EXISTS job_commands (
     args TEXT,
     created_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS other_recycle (
+    id INTEGER PRIMARY KEY,
+    library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    recycle_path TEXT NOT NULL,
+    size INTEGER NOT NULL DEFAULT 0,
+    kind TEXT,
+    deleted_at REAL NOT NULL
+);
 """
 
 
