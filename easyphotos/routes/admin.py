@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from .. import cleanup, config, db, emptydirs, otherfiles, recycle, settings
+from .. import cleanup, config, db, emptydirs, otherfiles, quality, recycle, settings
 from ..security import ROLES, User, admin_user, audit
 from .common import ids_param
 
@@ -569,6 +569,15 @@ def purge_other_files(body: dict, user: User = Depends(admin_user)):
     n = otherfiles.purge(ids)
     audit(None, user, "deleted %s non-photo file(s) for good", n)
     return {"purged": n}
+
+
+@router.get("/quality")
+def quality_counts(level: str = "blurry", user: User = Depends(admin_user)):
+    """Numbers for Library > Blurry photos."""
+    out = quality.counts(level)
+    out["enabled"] = bool(settings.get("quality_enabled"))
+    out["kept"] = db.val("SELECT COUNT(*) FROM assets WHERE quality_ok=1 AND deleted_at IS NULL", default=0)
+    return out
 
 
 @router.get("/recycle")

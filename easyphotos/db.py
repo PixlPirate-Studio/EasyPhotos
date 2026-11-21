@@ -311,6 +311,11 @@ MIGRATIONS = [
     ("libraries", "scan_found", "INTEGER"),
     ("libraries", "scan_message", "TEXT"),
     ("libraries", "scan_stopped", "INTEGER NOT NULL DEFAULT 0"),
+    # blurry / dark photo finder: 0 = not checked yet, 1 = checked, 2 = skipped (video), -1 = failed
+    ("assets", "quality_status", "INTEGER NOT NULL DEFAULT 0"),
+    ("assets", "sharpness", "REAL"),
+    ("assets", "brightness", "REAL"),
+    ("assets", "quality_ok", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -321,6 +326,7 @@ def init() -> None:
         cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
         if col not in cols:
             c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_assets_quality ON assets(quality_status)")
     c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
     c.commit()
 

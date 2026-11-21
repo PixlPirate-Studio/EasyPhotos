@@ -614,6 +614,58 @@ export async function duplicates(el, p, q) {
   load();
 }
 
+// ---------------------------------------------------------------- Blurry photos
+export async function quality(el, p, q) {
+  let level = ['very', 'blurry', 'soft', 'dark'].includes(q.level) ? q.level : 'blurry';
+  const tabs = h('div', { class: 'tabs' });
+  const info = h('div', { class: 'hint', style: { margin: '10px 0 4px' } });
+  const gridWrap = h('div');
+  el.append(head('Library › Blurry photos', 'Photos that look blurry or too dark, so you can decide what to delete. Nothing is deleted unless you choose to.'),
+    tabs, info, gridWrap);
+  let grid = null, timer = null, dead = false;
+  const labels = { very: 'Very blurry', blurry: 'Blurry', soft: 'Slightly soft', dark: 'Too dark' };
+  const explain = {
+    very: 'Only the worst ones. Almost all of these are photos nobody wants.',
+    blurry: 'Clearly blurry or shaky. A good place to start.',
+    soft: 'Includes photos that are just a little soft. Check these more carefully.',
+    dark: 'Nearly black photos, like pocket shots or a covered lens.',
+  };
+  async function counts() {
+    let c;
+    try { c = await api(`/api/admin/quality?level=${level === 'dark' ? 'blurry' : level}`); } catch (e) { return; }
+    if (dead) return;
+    tabs.innerHTML = '';
+    Object.entries(labels).forEach(([k, label]) => tabs.append(h('button', { class: level === k ? 'on' : '', onclick: () => { level = k; history.replaceState(null, '', `#/admin/quality?level=${k}`); show(); } }, `${label} · ${num(c[k] || 0)}`)));
+    const left = c.total - c.checked;
+    info.innerHTML = '';
+    info.append(explain[level],
+      left > 0 ? h('div', { style: { marginTop: '6px', color: 'var(--accent)' } }, `Still checking: ${num(c.checked)} of ${num(c.total)} photos done. The list grows as it goes.`) : null,
+      !c.enabled ? h('div', { style: { marginTop: '6px', color: 'var(--orange)' } }, 'Blur checking is turned off in Settings.') : null,
+      h('div', { style: { marginTop: '6px' } }, 'Select photos to delete them, or tap “Looks fine” so they stop showing up here.'));
+    clearTimeout(timer);
+    if (left > 0) timer = setTimeout(counts, 10000);
+  }
+  function show() {
+    if (grid) grid.destroy();
+    gridWrap.innerHTML = '';
+    grid = new PhotoGrid({
+      query: level === 'dark' ? { dark: 1 } : { blurry: level },
+      emptyText: 'Nothing here. Nice!',
+      extraActions: [{ icon: 'check', label: 'Looks fine', run: async (ids, g) => {
+        try {
+          await api('/api/assets/bulk', { method: 'POST', body: { ids, action: 'quality_ok' } });
+          toast(`${num(ids.length)} marked as fine. They won’t show up here again.`);
+          g.clearSelection(); g.reload(); counts();
+        } catch (e) { errToast(e); }
+      } }],
+    });
+    grid.mount(gridWrap);
+    counts();
+  }
+  show();
+  return () => { dead = true; clearTimeout(timer); if (grid) grid.destroy(); };
+}
+
 // Runs a "Look for…" check in the background worker and keeps the page up to
 // date. The result is saved on the server, so the page can be closed.
 function bgCheck({ what, url, status, findBtn, idleLabel, onResult }) {
@@ -1193,6 +1245,7 @@ export async function settings(el) {
       h('span', { class: 'hint', style: { marginTop: '-10px' } }, 'Turn on only what you want. Anything that’s off uses no memory or CPU.'),
       h('div', { class: 'optgrid' },
         chk('duplicates_enabled', 'Duplicate finder', 'Spots copies while making thumbnails. Never deletes on its own.'),
+        chk('quality_enabled', 'Blurry photo finder', 'Checks each photo for blur and darkness in the background (quick). Never deletes on its own.'),
         chk('places_enabled', 'Place names (offline)', 'Turns GPS into “Whiteland, Indiana” with a built-in town list. No internet.'),
         chk('xmp_enabled', 'Save names, tags and descriptions to .xmp files', 'Small file next to each photo so your work goes with you to any app. Needs Read/Write access.'),
         chk('video_compat', 'Convert videos only when needed', 'Plays originals. Converts on the fly only if a browser can’t play one.'))),

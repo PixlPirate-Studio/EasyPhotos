@@ -146,6 +146,7 @@ function shell() {
       navLink('#/admin/library', 'folder', 'Folders & scanning'),
       navLink('#/admin/faces', 'scan', 'Faces', h('span', { class: 'badge orange hidden', id: 'faces-badge' })),
       navLink('#/admin/duplicates', 'dup', 'Duplicates', h('span', { class: 'badge hidden', id: 'dup-badge' })),
+      navLink('#/admin/quality', 'blur', 'Blurry photos'),
       navLink('#/admin/empty-folders', 'folder', 'Empty folders'),
       navLink('#/admin/other-files', 'doc', 'Non-photo files'),
       navLink('#/admin/hidden', 'eyeoff', 'Hidden'),
@@ -299,6 +300,7 @@ function registerRoutes() {
   route('/admin/hidden', adminOnly(A.hidden));
   route('/admin/recycle', adminOnly(A.recycle));
   route('/admin/empty-folders', adminOnly(A.emptyFolders));
+  route('/admin/quality', adminOnly(A.quality));
   route('/admin/other-files', adminOnly(A.otherFiles));
   route('/admin/users', adminOnly(A.users));
   route('/admin/apikeys', adminOnly(A.apikeys));

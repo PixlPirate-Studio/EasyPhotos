@@ -65,6 +65,13 @@ def build_filter(user: User, p: dict):
     if str(p.get("favorites", "")) == "1":
         where.append("a.id IN (SELECT asset_id FROM favorites WHERE user_id=?)")
         args.append(user.id)
+    if user.is_admin and p.get("blurry"):  # blurry photo finder: very | blurry | soft
+        from ..quality import LEVELS
+        where.append("a.kind='image' AND a.quality_ok=0 AND a.is_live_part=0 AND a.sharpness < ?")
+        args.append(LEVELS.get(p["blurry"], LEVELS["blurry"]))
+    if user.is_admin and str(p.get("dark", "")) == "1":
+        where.append("a.kind='image' AND a.quality_ok=0 AND a.is_live_part=0 AND a.quality_status=1 "
+                     "AND (a.brightness < 22 OR (a.sharpness IS NULL AND a.brightness < 45))")
     if p.get("kind") in ("image", "video"):
         where.append("a.kind=?")
         args.append(p["kind"])

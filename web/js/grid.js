@@ -5,8 +5,9 @@ import { openViewer } from './viewer.js';
 import { state } from './state.js';
 
 export class PhotoGrid {
-  constructor({ query = {}, scrubber = false, header = null, emptyText = 'No photos here yet.', hiddenView = false } = {}) {
+  constructor({ query = {}, scrubber = false, header = null, emptyText = 'No photos here yet.', hiddenView = false, extraActions = [] } = {}) {
     this.query = { ...query };
+    this.extraActions = extraActions;
     this.useScrubber = scrubber;
     this.header = header;
     this.emptyText = emptyText;
@@ -294,6 +295,7 @@ export class PhotoGrid {
           this.clearSelection(); this.reload();
         } catch (e) { errToast(e); }
       }) : null,
+      ...this.extraActions.map(a => act(a.icon, a.label, () => a.run(ids(), this), a.cls || '')),
       u.is_admin && state.allowDelete ? act('trash', 'Delete', () => deleteDialog(ids(), () => { this.clearSelection(); this.reload(); }), 'red') : null,
       h('button', { class: 'act', style: { marginLeft: 'auto' }, onclick: async () => {
         try { const all = await api('/api/assets/ids?' + new URLSearchParams(this.query)); all.forEach(i => this.selected.add(i)); this.updateSelection(); }

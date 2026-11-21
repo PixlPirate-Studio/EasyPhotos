@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PIL import Image
 
-from . import cleanup, cluster, config, db, dupes, media, recycle, scanner, settings, xmp
+from . import cleanup, cluster, config, db, dupes, media, quality, recycle, scanner, settings, xmp
 
 log = logging.getLogger("easyphotos.worker")
 
@@ -30,7 +30,7 @@ def set_status(name: str, state: str, message: str = "", rate=None) -> None:
 
 _act_count = 0
 _log_files = True
-KIND_LABEL = {"cleanup": "CLEAN", "scan": "SCAN", "thumbs": "THUMB", "faces": "FACES", "duplicates": "DUPES", "command": "ADMIN"}
+KIND_LABEL = {"quality": "BLUR", "cleanup": "CLEAN", "scan": "SCAN", "thumbs": "THUMB", "faces": "FACES", "duplicates": "DUPES", "command": "ADMIN"}
 
 
 def activity(entries) -> None:
@@ -77,6 +77,7 @@ class Worker:
         self.scan_thread = None
         self.scan_stop = threading.Event()
         self.cleanup_threads = {}
+        self.quality_running = False
         self.cleanup_stops = {}
         self.last_beat = 0.0
         self.threads = 1
@@ -272,6 +273,41 @@ class Worker:
         return True
 
     # ------------------------------------------------------------ faces
+    def quality_batch(self, s, threads: int) -> bool:
+        """Checks photos for blur and darkness (quick: about 30 minutes for 80,000 photos)."""
+        if not s.get("quality_enabled", True):
+            return False
+        db.ex("UPDATE assets SET quality_status=2 WHERE quality_status=0 AND (kind<>'image' OR is_live_part=1) AND meta_status=1")
+        rows = db.q("SELECT id FROM assets WHERE quality_status=0 AND meta_status=1 AND kind='image' AND deleted_at IS NULL LIMIT 64")
+        if not rows:
+            if self.quality_running:
+                self.quality_running = False
+                c = quality.counts()
+                activity([("quality", "info", f"Finished checking photos for blur: {c['blurry']:,} look blurry, {c['dark']:,} look too dark")])
+            return False
+        if not self.quality_running:
+            self.quality_running = True
+            left = db.val("SELECT COUNT(*) FROM assets WHERE quality_status=0 AND meta_status=1 AND kind='image' AND deleted_at IS NULL", default=0)
+            activity([("quality", "info", f"Started checking {left:,} photos for blur")])
+        from concurrent.futures import ThreadPoolExecutor
+
+        def one(aid):
+            try:
+                return aid, quality.check(aid), None
+            except Exception as e:
+                return aid, None, e
+        with ThreadPoolExecutor(max_workers=max(1, threads)) as ex:
+            results = list(ex.map(one, [r["id"] for r in rows]))
+        ok = [(res[0], res[1], aid) for aid, res, err in results if err is None]
+        bad = [(str(err)[:200], aid) for aid, res, err in results if err is not None]
+        with db.tx() as c:
+            c.executemany("UPDATE assets SET sharpness=?, brightness=?, quality_status=1 WHERE id=?", ok)
+            c.executemany("UPDATE assets SET quality_status=-1 WHERE id=?", [(aid,) for e, aid in bad])
+        for e, aid in bad[:3]:
+            log.debug("Blur check failed for asset %s: %s", aid, e)
+        set_status("quality", "running", f"Checking photos for blur… {len(rows)} more done")
+        return True
+
     def faces_batch(self, s, threads: int) -> bool:
         if not (s["faces_enabled"] and s["faces_started"]):
             return False
@@ -541,6 +577,8 @@ class Worker:
                 did = self.maybe_scan(s) or did
                 did = self.meta_batch(threads) or did
                 did = self.embed_manual(s, threads) or did
+                if not did:
+                    did = self.quality_batch(s, threads)
                 if not did:
                     did = self.faces_batch(s, threads)
                 if not did:

@@ -33,6 +33,7 @@ DEFAULTS = {
     "recycle_auto_days": 0,     # 0 = never empty automatically
     # Optional extras
     "duplicates_enabled": True,
+    "quality_enabled": True,
     "places_enabled": True,
     "xmp_enabled": False,
     "video_compat": True,

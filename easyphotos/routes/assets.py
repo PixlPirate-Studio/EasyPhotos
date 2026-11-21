@@ -283,6 +283,11 @@ def bulk(body: dict, user: User = Depends(admin_user)):
         else:
             db.exmany("DELETE FROM album_assets WHERE album_id=? AND asset_id=?", [(album_id, a) for a in ids])
         return {"ok": True, "album_id": album_id, "count": len(ids)}
+    if action in ("quality_ok", "quality_reset"):
+        for i in range(0, len(ids), 500):
+            ch = ids[i:i + 500]
+            db.ex(f"UPDATE assets SET quality_ok=? WHERE id IN ({ph(len(ch))})", [1 if action == "quality_ok" else 0] + ch)
+        return {"ok": True, "count": len(ids)}
     if action == "fix_dates":
         mode = body.get("mode")
         rows = db.q(f"SELECT id, taken_ts FROM assets WHERE id IN ({ph(len(ids))}) ORDER BY taken_ts, id", ids) if len(ids) <= 900 else \
