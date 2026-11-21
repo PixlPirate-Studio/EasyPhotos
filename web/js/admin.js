@@ -644,7 +644,8 @@ export async function emptyFolders(el) {
         if (selected.has(key)) selected.get(key).cb = cb;
         cbs.push([key, f, cb]);
         const notes = [f.subfolders ? `has ${num(f.subfolders)} empty folder${f.subfolders > 1 ? 's' : ''} inside` : null,
-          f.junk_count ? `only system files: ${f.junk.join(', ')}${f.junk_count > f.junk.length ? '…' : ''}` : null].filter(Boolean).join(' · ');
+          f.junk_count ? `only system files: ${f.junk.join(', ')}${f.junk_count > f.junk.length ? '…' : ''}` : null].filter(Boolean).join(' · ')
+          || 'Completely empty: no files and no folders inside';
         rows.append(h('label', { class: 'check', style: { alignItems: 'flex-start', padding: '10px 0', borderTop: '1px solid var(--line)', minHeight: 0 } }, cb,
           h('div', { style: { minWidth: 0 } }, h('div', { class: 'mono', style: { wordBreak: 'break-all' } }, f.rel), notes ? h('div', { class: 'hint' }, notes) : null)));
       });
@@ -654,7 +655,7 @@ export async function emptyFolders(el) {
       };
       drawMore();
       body.append(h('section', { class: 'card' },
-        h('div', { class: 'row' }, h('b', { class: 'grow' }, `${lib.name} · ${num(lib.folders.length)}`),
+        h('div', { class: 'row' }, h('div', { class: 'grow' }, h('b', {}, `${num(lib.folders.length)} empty folder${lib.folders.length > 1 ? 's' : ''}`), h('div', { class: 'hint' }, `In the “${lib.name}” library`)),
           lib.writable ? h('button', { class: 'btn small', onclick: () => { lib.folders.forEach(f => { const key = `${lib.id}:${f.rel}`; if (!selected.has(key)) selected.set(key, { library_id: lib.id, rel: f.rel, cb: { checked: true } }); }); cbs.forEach(([key, f, cb]) => { cb.checked = true; selected.set(key, { library_id: lib.id, rel: f.rel, cb }); }); drawSel(); } }, 'Select all') : null),
         lib.capped ? h('div', { class: 'hint' }, 'Showing the first 20,000. Remove these and look again to see the rest.') : null,
         !lib.writable ? h('div', { class: 'hint', style: { color: 'var(--orange, #F5A35C)' } }, 'This library is read-only, so folders can’t be removed. Change its folder mapping in Unraid to Read/Write if you want to.') : null,
