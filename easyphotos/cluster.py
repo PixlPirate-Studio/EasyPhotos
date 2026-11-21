@@ -254,6 +254,9 @@ def recluster_unnamed() -> int:
         return 0
     X = np.stack([from_blob(r["embedding"]) for r in faces]).astype(np.float32)
     labels = group_faces(X, thr)
+    nots = {}
+    for r in db.q("SELECT face_id, person_id FROM face_not"):
+        nots.setdefault(r["face_id"], set()).add(r["person_id"])
     # Work out every group first, then save it all in one go: if anything
     # fails before that, the existing groups are left exactly as they were.
     plan = []
@@ -261,12 +264,17 @@ def recluster_unnamed() -> int:
         idx = np.where(labels == g)[0]
         cen = _norm(X[idx].mean(axis=0))
         pid = None
+        fids = [faces[i]["id"] for i in idx]
         if named["ids"]:
             sims = named["mat"] @ cen
+            for k_, p_ in enumerate(named["ids"]):
+                said_not = sum(1 for f in fids if p_ in nots.get(f, ()))
+                if said_not and said_not * 2 >= len(fids):
+                    sims[k_] = -1
             k = int(np.argmax(sims))
             if sims[k] >= thr:
                 pid = named["ids"][k]
-        plan.append((pid, cen, [faces[i]["id"] for i in idx]))
+        plan.append((pid, cen, fids))
     touched = set()
     now = time.time()
     with db.tx() as c:
@@ -283,18 +291,36 @@ def recluster_unnamed() -> int:
     return len(faces)
 
 
-def suggestion_for(centroid_blob, named_cache) -> tuple[int, str] | None:
-    """'Looks like X?' — nearest named person that is close but not close enough."""
+def suggestion_for(centroid_blob, named_cache, exclude=()) -> tuple[int, str, float] | None:
+    """'Looks like X?' — nearest named person that is close but not close enough.
+    exclude: named person ids the admin said this group is NOT."""
     if not centroid_blob or not named_cache["ids"]:
         return None
     v = from_blob(centroid_blob)
     sims = named_cache["mat"] @ v
+    if exclude:
+        for k, pid in enumerate(named_cache["ids"]):
+            if pid in exclude:
+                sims[k] = -1
     i = int(np.argmax(sims))
     s = float(sims[i])
     thr = settings.similarity_threshold()
     if thr - 0.15 <= s:
-        return named_cache["ids"][i], named_cache["names"][i]
+        return named_cache["ids"][i], named_cache["names"][i], s
     return None
+
+
+def not_people(person_ids) -> dict:
+    """For each group: the named people the admin said it is NOT
+    (any of its faces marked "Not X")."""
+    person_ids = list(person_ids)
+    out = {pid: set() for pid in person_ids}
+    for start in range(0, len(person_ids), 500):
+        part = person_ids[start:start + 500]
+        for r in db.q(f"SELECT DISTINCT f.person_id AS g, n.person_id AS p FROM face_not n JOIN faces f ON f.id=n.face_id "
+                      f"WHERE f.person_id IN ({','.join('?' * len(part))})", part):
+            out[r["g"]].add(r["p"])
+    return out
 
 
 def named_cache():

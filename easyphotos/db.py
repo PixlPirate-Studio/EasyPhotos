@@ -211,6 +211,13 @@ CREATE TABLE IF NOT EXISTS job_commands (
     created_at REAL NOT NULL
 );
 
+-- "Not X": these faces are not this named person, so never suggest or join them.
+CREATE TABLE IF NOT EXISTS face_not (
+    face_id INTEGER NOT NULL,
+    person_id INTEGER NOT NULL,
+    PRIMARY KEY (face_id, person_id)
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS cleanup_runs (
     name TEXT PRIMARY KEY,
     state TEXT NOT NULL DEFAULT 'idle',

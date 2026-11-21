@@ -303,65 +303,105 @@ export async function folder(el, p, q) {
 
 // ---------------------------------------------------------------- Faces
 
+// Where you were on the Faces list, so coming back from a group or a photo
+// puts you in the same spot instead of the top.
+let facesSpot = null;
+
 export async function faces(el, p, q) {
   let tab = q.tab || 'needs', sort = 'count', offset = 0;
+  const back = facesSpot && facesSpot.tab === tab && Date.now() - facesSpot.at < 6 * 3600e3 ? facesSpot : null;
+  facesSpot = null;
+  if (back) sort = back.sort;
   const tabs = h('div', { class: 'tabs' });
   const grid = h('div', { class: 'fgrid' });
   const more = h('div', { style: { textAlign: 'center', padding: '16px' } });
-  el.append(head('Library › Faces', 'Each card is one person the AI grouped together. Type a name, or leave it unmatched. Click a card to fix wrong faces in it.', [
-    h('select', { class: 'input', style: { width: 'auto' }, 'aria-label': 'Sort', onchange: (e) => { sort = e.target.value; load(true); } },
-      h('option', { value: 'count' }, 'Most photos first'), h('option', { value: 'new' }, 'Newest first')),
-  ]), tabs, h('div', { style: { height: '16px' } }), grid, more);
-  const names = { needs: 'Needs a name', named: 'Named', unmatched: 'Left unmatched', single: 'Single faces', hidden: 'Hidden' };
-  async function load(reset = false) {
+  const sortSel = h('select', { class: 'input', style: { width: 'auto' }, 'aria-label': 'Sort', onchange: (e) => { sort = e.target.value; load(true); } },
+    h('option', { value: 'count' }, 'Most photos first'), h('option', { value: 'new' }, 'Newest first'));
+  sortSel.value = sort;
+  const intro = h('p', { class: 'hint', style: { margin: '0 0 12px' } });
+  el.append(head('Library › Faces', 'Each card is one person the AI grouped together. Type a name, or leave it unmatched. Click a card to fix wrong faces in it.', [sortSel]),
+    tabs, h('div', { style: { height: '12px' } }), intro, grid, more);
+  const names = { needs: 'Needs a name', possible: 'Possible matches', named: 'Named', unmatched: 'Left unmatched', single: 'Single faces', hidden: 'Hidden' };
+  const remember = () => { facesSpot = { tab, sort, count: grid.querySelectorAll('.fcard').length, y: window.scrollY, at: Date.now() }; };
+  async function load(reset = false, want = 40) {
     if (reset) { offset = 0; grid.innerHTML = ''; }
     let r;
-    try { r = await api(`/api/admin/faces?tab=${tab}&sort=${sort}&offset=${offset}&limit=40`); } catch (e) { return errToast(e); }
+    try { r = await api(`/api/admin/faces?tab=${tab}&sort=${sort}&offset=${offset}&limit=${want}`); } catch (e) { return errToast(e); }
     tabs.innerHTML = '';
     Object.entries(names).forEach(([k, label]) => tabs.append(h('button', { class: tab === k ? 'on' : '', onclick: () => { tab = k; history.replaceState(null, '', `#/admin/faces?tab=${k}`); load(true); } }, `${label} · ${num(r.counts[k])}`)));
+    sortSel.classList.toggle('hidden', tab === 'possible');
+    intro.textContent = tab === 'possible' ? 'Groups that look like someone you already named, best matches first. Tap “Yes” if it’s them, or “Not …” if it isn’t and it will stop suggesting that person.' : '';
+    intro.classList.toggle('hidden', tab !== 'possible');
     if (!r.items.length && !offset) {
       grid.append(h('div', { class: 'empty', style: { gridColumn: '1/-1' } }, icon('scan'),
-        tab === 'needs' ? 'Nothing waiting for a name. If face finding is still running, more will show up here.' : 'Nothing here.'));
+        tab === 'needs' ? 'Nothing waiting for a name. If face finding is still running, more will show up here.'
+          : tab === 'possible' ? (r.counts.named ? 'No groups look like anyone you’ve named right now.' : 'Name a few people first. Groups that look like them will show up here.') : 'Nothing here.'));
     }
     r.items.forEach(item => grid.append(card(item)));
     offset += r.items.length;
     more.innerHTML = '';
-    if (r.items.length === 40) more.append(h('button', { class: 'btn', onclick: () => load() }, 'Show more'));
+    if (r.items.length === want) more.append(h('button', { class: 'btn', onclick: () => load() }, 'Show more'));
   }
   function card(item) {
-    const input = h('input', { class: 'input', placeholder: 'Type a name…', value: item.name || (item.suggest ? item.suggest.name : ''), list: 'people-names', 'aria-label': 'Name' });
+    const sug = item.suggest && !item.name ? item.suggest : null;
+    const input = h('input', { class: 'input', placeholder: sug ? 'Or type a different name…' : 'Type a name…', value: item.name || '', list: 'people-names', 'aria-label': 'Name' });
     const c = h('article', { class: 'fcard' });
+    const done = (msg) => { toast(msg); if (tab !== 'named') c.remove(); };
     const save = async () => {
       const name = input.value.trim();
       if (!name) { toast('Type a name first.', true); return; }
       try {
         const r = await nameSafely(name, (extra) => api(`/api/people/${item.id}`, { method: 'PATCH', body: { name, ...extra } }));
         if (!r) return;
-        toast(r.merged ? `Added to ${name}.` : `Saved as ${name}.`);
-        if (tab !== 'named') c.remove();
+        done(r.merged ? `Added to ${name}.` : `Saved as ${name}.`);
       } catch (e) { errToast(e); }
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+    const matchWord = { strong: 'Strong match', good: 'Good match', maybe: 'Maybe' };
     c.append(
-      h('div', { class: 'top', onclick: () => go(`#/admin/faces/${item.id}`) },
+      h('div', { class: 'top', onclick: () => { remember(); go(`#/admin/faces/${item.id}`); } },
         item.cover ? h('img', { class: 'cover', src: faceUrl(item.cover), alt: '', loading: 'lazy', decoding: 'async', width: 72, height: 72 }) : h('div', { class: 'cover' }),
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 } },
           h('b', {}, item.name || `${num(item.photos)} photo${item.photos === 1 ? '' : 's'}`),
-          h('span', { class: 'hint' }, item.name ? `${num(item.photos)} photos` : item.years),
-          item.suggest && !item.name ? h('span', { class: 'suggest-line' }, `Looks like ${item.suggest.name}?`) : null)),
+          h('span', { class: 'hint' }, item.name ? `${num(item.photos)} photos` : item.years))),
       item.samples.length ? h('div', { class: 'samples' }, item.samples.map(s => h('img', { src: faceUrl(s), alt: '', loading: 'lazy', decoding: 'async' }))) : null,
+      sug ? h('div', { class: 'suggest-box' },
+        h('div', {}, 'Looks like ', h('b', {}, sug.name), '?', h('span', { class: 'badge ' + (sug.match === 'strong' ? 'green' : '') , style: { marginLeft: '8px' } }, matchWord[sug.match] || '')),
+        h('div', { class: 'row', style: { gap: '6px', flexWrap: 'nowrap' } },
+          h('button', { class: 'btn small primary grow', onclick: async () => {
+            try { await api(`/api/people/${item.id}`, { method: 'PATCH', body: { name: sug.name, person_id: sug.id } }); done(`Added to ${sug.name}.`); } catch (e) { errToast(e); }
+          } }, `Yes, it’s ${sug.name}`),
+          h('button', { class: 'btn small grow', onclick: async () => {
+            try {
+              const r = await api(`/api/people/${item.id}`, { method: 'PATCH', body: { not_person: sug.id } });
+              toast(`Got it, not ${sug.name}.`);
+              if (tab === 'possible' && !r.suggest) { c.remove(); return; }
+              c.replaceWith(card({ ...item, suggest: r.suggest }));
+            } catch (e) { errToast(e); }
+          } }, `Not ${sug.name}`))) : null,
       input,
       h('div', { class: 'row', style: { gap: '6px', flexWrap: 'nowrap' } },
-        h('button', { class: 'btn small primary grow', onclick: save }, item.name ? 'Rename' : 'Save name'),
+        h('button', { class: 'btn small grow' + (sug ? '' : ' primary'), onclick: save }, item.name ? 'Rename' : 'Save name'),
         tab === 'unmatched' || tab === 'hidden'
           ? h('button', { class: 'btn small grow', onclick: async () => { await api(`/api/people/${item.id}`, { method: 'PATCH', body: { unmatched: false, hidden: false } }); c.remove(); } }, 'Move back')
-          : !item.name ? h('button', { class: 'btn small grow', onclick: async () => { await api(`/api/people/${item.id}`, { method: 'PATCH', body: { unmatched: true } }); toast('Left unmatched.'); c.remove(); } }, 'Leave unmatched') : null));
+          : !item.name ? h('button', { class: 'btn small grow', onclick: async () => { await api(`/api/people/${item.id}`, { method: 'PATCH', body: { unmatched: true } }); done('Left unmatched.'); } }, 'Leave unmatched') : null));
     return c;
   }
   const dl = h('datalist', { id: 'people-names' });
   api('/api/people').then(ps => ps.forEach(pp => dl.append(h('option', { value: pp.name })))).catch(() => {});
   el.append(dl);
-  load(true);
+  await load(true, back ? Math.min(400, Math.max(40, back.count)) : 40);
+  if (back) {
+    const y = back.y;
+    // try a few times while pictures load and the page grows to its full height
+    let moved = false;
+    const stop = () => { moved = true; };
+    window.addEventListener('touchstart', stop, { once: true, passive: true });
+    window.addEventListener('wheel', stop, { once: true, passive: true });
+    [0, 150, 400, 800, 1500].forEach(ms => setTimeout(() => { if (!moved) window.scrollTo(0, y); }, ms));
+  }
+  // Leaving the page any other way (Back from a photo, a menu link…) also remembers the spot.
+  return () => { if (!facesSpot) remember(); };
 }
 
 export async function faceGroup(el, p) {
@@ -475,9 +515,10 @@ export async function duplicates(el, p, q) {
   }
 
   async function doSelected(action) {
-    const picks = [...selected].map(id => ({ id, keep: groups.get(id).keep }));
-    const files = picks.reduce((s, x) => s + groups.get(x.id).g.members.length - 1, 0);
-    if (action === 'delete' && !await confirmDialog({ title: `Delete ${files} extra cop${files === 1 ? 'y' : 'ies'}?`, text: `From ${picks.length} group${picks.length > 1 ? 's' : ''}. The copy marked “Keep” in each group stays. The others go to the Recycle Bin, where you can restore them until you empty it.`, confirmLabel: 'Send to Recycle Bin', danger: true, typeWord: 'DELETE' })) return;
+    const picks = [...selected].map(id => { const e = groups.get(id); return e.keep ? { id, keep: e.keep } : (action === 'delete' ? { id, delete_all: true } : { id, keep: e.g.suggest_keep }); });
+    const files = picks.reduce((s, x) => s + groups.get(x.id).g.members.length - (x.delete_all ? 0 : 1), 0);
+    const allGone = picks.filter(x => x.delete_all).length;
+    if (action === 'delete' && !await confirmDialog({ title: `Delete ${files} photo${files === 1 ? '' : 's'}?`, text: `From ${picks.length} group${picks.length > 1 ? 's' : ''}. The copy marked “Keep” in each group stays${allGone ? ` (except ${allGone} group${allGone > 1 ? 's' : ''} where you chose to delete every copy)` : ''}. They go to the Recycle Bin, where you can restore them until you empty it.`, confirmLabel: 'Send to Recycle Bin', danger: true, typeWord: 'DELETE' })) return;
     try {
       const r = await post('/api/admin/duplicates/bulk', { action, groups: picks, confirm: action === 'delete' ? 'DELETE' : undefined });
       if (r.errors && r.errors.length) toast(r.errors[0], true);
@@ -501,13 +542,15 @@ export async function duplicates(el, p, q) {
   function group(g) {
     const entry = { g, keep: g.suggest_keep };
     const sec = h('section', { class: 'card' });
+    const buttons = h('div', { class: 'row' });
     const copies = h('div', { class: 'dupgrid' });
     const draw = () => {
       copies.innerHTML = '';
       g.members.forEach(m => {
         const isKeep = m.id === entry.keep;
-        copies.append(h('div', { class: 'dupcopy' + (isKeep ? ' keep' : ''), onclick: () => { entry.keep = m.id; draw(); }, role: 'radio', 'aria-checked': isKeep ? 'true' : 'false', tabindex: 0 },
-          h('div', { class: 'img' }, img(thumbUrl(m.id, m.thumb_ver)), h('span', { class: 'tag' }, isKeep ? (m.id === g.suggest_keep ? 'Keep (suggested)' : 'Keep') : 'Extra copy')),
+        const gone = !entry.keep;
+        copies.append(h('div', { class: 'dupcopy' + (isKeep ? ' keep' : '') + (gone ? ' gone' : ''), onclick: () => { entry.keep = m.id; draw(); drawButtons(); }, role: 'radio', 'aria-checked': isKeep ? 'true' : 'false', tabindex: 0 },
+          h('div', { class: 'img' }, img(thumbUrl(m.id, m.thumb_ver)), h('span', { class: 'tag' }, gone ? 'Will be deleted' : isKeep ? (m.id === g.suggest_keep ? 'Keep (suggested)' : 'Keep') : 'Extra copy')),
           h('div', { class: 'mono muted', style: { wordBreak: 'break-all' } }, `${m.library} / ${m.path}`),
           h('div', { style: { fontSize: '13px', color: 'var(--text2)' } }, `${m.width || '?'} × ${m.height || '?'} · ${fmtBytes(m.size)}`),
           h('div', { class: 'hint' }, [m.named_faces ? `${m.named_faces} named face${m.named_faces > 1 ? 's' : ''}` : null, m.tags ? `${m.tags} tags` : null, m.albums ? 'in an album' : null, m.lat ? 'has location' : null].filter(Boolean).join(' · ') || 'No extra info')));
@@ -521,27 +564,51 @@ export async function duplicates(el, p, q) {
     groups.set(g.id, entry);
     const done = () => { sec.remove(); groups.delete(g.id); selected.delete(g.id); drawSel(); drawTabs(); };
     const others = () => g.members.length - 1;
+    const both = g.members.length === 2 ? 'both' : `all ${g.members.length}`;
+    function drawButtons() {
+      buttons.innerHTML = '';
+      if (kind === 'kept') { buttons.append(h('button', { class: 'btn', onclick: async () => { await post(`/api/admin/duplicates/${g.id}`, { action: 'reopen' }); done(); } }, 'Check this group again')); return; }
+      if (!entry.keep) {
+        // "Delete both" is chosen: every copy goes
+        buttons.append(
+          h('button', { class: 'btn small warn', onclick: async () => {
+            if (!await confirmDialog({ title: `Delete ${both} copies?`, text: 'No copy of this photo will be kept. They go to the Recycle Bin, where you can restore them until you empty it.', confirmLabel: 'Send to Recycle Bin', danger: true })) return;
+            try {
+              const r = await post(`/api/admin/duplicates/${g.id}`, { action: 'delete', delete_all: true, confirm: 'DELETE' });
+              if (r.errors && r.errors.length) toast(r.errors[0], true); else { toast('Moved to the Recycle Bin.'); done(); }
+            } catch (e) { errToast(e); }
+          } }, `Delete ${both} now`),
+          h('button', { class: 'btn small ghost', onclick: () => { entry.keep = g.suggest_keep; draw(); drawButtons(); } }, 'Undo'),
+          h('button', { class: 'btn small ghost', style: { marginLeft: 'auto' }, onclick: done }, 'Skip'));
+        return;
+      }
+      buttons.append(
+        h('button', { class: 'btn small', onclick: async () => {
+          try { await post(`/api/admin/duplicates/${g.id}`, { action: 'hide', keep: entry.keep }); toast('Extra copy hidden. The file was not touched.'); done(); } catch (e) { errToast(e); }
+        } }, `Hide the extra cop${others() > 1 ? 'ies' : 'y'}`),
+        state.allowDelete ? h('button', { class: 'btn small warn', onclick: async () => {
+          if (!await confirmDialog({ title: `Delete ${others()} photo${others() > 1 ? 's' : ''}?`, text: 'The extra copy goes to the Recycle Bin. You can restore it until you empty the bin.', confirmLabel: 'Send to Recycle Bin', danger: true })) return;
+          try {
+            const r = await post(`/api/admin/duplicates/${g.id}`, { action: 'delete', keep: entry.keep, confirm: 'DELETE' });
+            if (r.errors && r.errors.length) toast(r.errors[0], true); else { toast('Moved to the Recycle Bin.'); done(); }
+          } catch (e) { errToast(e); }
+        } }, `Delete extra cop${others() > 1 ? 'ies' : 'y'}`) : null,
+        h('button', { class: 'btn small ghost', onclick: async () => { await post(`/api/admin/duplicates/${g.id}`, { action: 'keep_both' }); toast(g.members.length === 2 ? 'Kept both.' : 'Kept all.'); done(); } }, `Keep ${both}`),
+        state.allowDelete ? h('button', { class: 'btn small ghost danger-text', onclick: () => {
+          entry.keep = 0; draw(); drawButtons();
+          if (!selected.has(g.id)) { selected.add(g.id); cb.checked = true; drawSel(); }
+        } }, `Delete ${both}`) : null,
+        h('button', { class: 'btn small ghost', style: { marginLeft: 'auto' }, onclick: done }, 'Skip'));
+    }
     sec.append(
       h('div', { class: 'row' },
         kind !== 'kept' ? h('label', { class: 'check', style: { minHeight: 0 } }, cb, 'Select') : null,
         h('span', { class: 'badge green' }, g.kind === 'exact' ? '100% identical' : 'Look the same'),
         h('span', { class: 'hint' }, fmtDateTime(g.members[0]?.taken_at).date)),
       copies,
-      kind === 'kept' ? h('div', { class: 'row' }, h('button', { class: 'btn', onclick: async () => { await post(`/api/admin/duplicates/${g.id}`, { action: 'reopen' }); done(); } }, 'Check this group again'))
-        : h('div', { class: 'row' },
-          h('button', { class: 'btn small', onclick: async () => {
-            try { await post(`/api/admin/duplicates/${g.id}`, { action: 'hide', keep: entry.keep }); toast('Extra copy hidden. The file was not touched.'); done(); } catch (e) { errToast(e); }
-          } }, `Hide the extra cop${others() > 1 ? 'ies' : 'y'}`),
-          state.allowDelete ? h('button', { class: 'btn small warn', onclick: async () => {
-            if (!await confirmDialog({ title: `Delete ${others()} photo${others() > 1 ? 's' : ''}?`, text: 'The extra copy goes to the Recycle Bin. You can restore it until you empty the bin.', confirmLabel: 'Send to Recycle Bin', danger: true })) return;
-            try {
-              const r = await post(`/api/admin/duplicates/${g.id}`, { action: 'delete', keep: entry.keep, confirm: 'DELETE' });
-              if (r.errors && r.errors.length) toast(r.errors[0], true); else { toast('Moved to the Recycle Bin.'); done(); }
-            } catch (e) { errToast(e); }
-          } }, `Delete extra cop${others() > 1 ? 'ies' : 'y'}`) : null,
-          h('button', { class: 'btn small ghost', onclick: async () => { await post(`/api/admin/duplicates/${g.id}`, { action: 'keep_both' }); toast('Kept both.'); done(); } }, 'Keep both'),
-          h('button', { class: 'btn small ghost', style: { marginLeft: 'auto' }, onclick: done }, 'Skip')),
+      buttons,
       h('span', { class: 'hint' }, 'Tap a copy to choose which one to keep.'));
+    drawButtons();
     return sec;
   }
   load();

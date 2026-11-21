@@ -89,6 +89,8 @@ def _rename(person_id: int, name: str, body: dict | None = None) -> int:
         db.ex("UPDATE persons SET name=?, unmatched=0 WHERE id=?", (name, person_id))
         target = person_id
     db.ex("UPDATE faces SET confirmed=1 WHERE person_id=?", (target,))
+    # if they once said "Not X" but now say it IS X, the newer answer wins
+    db.ex("DELETE FROM face_not WHERE person_id=? AND face_id IN (SELECT id FROM faces WHERE person_id=?)", (target, target))
     xmp.mark_dirty(r["asset_id"] for r in db.q("SELECT DISTINCT asset_id FROM faces WHERE person_id=?", (target,)))
     return target
 
@@ -111,6 +113,16 @@ def edit_person(person_id: int, body: dict, user: User = Depends(admin_user)):
             db.ex("UPDATE faces SET confirmed=0 WHERE person_id=?", (person_id,))
             xmp.mark_dirty(r["asset_id"] for r in db.q("SELECT DISTINCT asset_id FROM faces WHERE person_id=?", (person_id,)))
             audit(None, user, "removed the name from person %d", person_id)
+    if body.get("not_person"):
+        other = int(body["not_person"])
+        with db.tx() as c:
+            c.execute("INSERT OR IGNORE INTO face_not(face_id, person_id) SELECT id, ? FROM faces WHERE person_id=? AND rejected=0",
+                      (other, person_id))
+        who = db.val("SELECT name FROM persons WHERE id=?", (other,), default="that person")
+        audit(None, user, "marked group %d as not %s", person_id, who)
+        r = db.q1("SELECT centroid FROM persons WHERE id=?", (person_id,))
+        s = cluster.suggestion_for(r["centroid"], cluster.named_cache(), cluster.not_people([person_id])[person_id])
+        return {"id": person_id, "merged": False, "suggest": {"id": s[0], "name": s[1], "match": _match_word(s[2])} if s else None}
     if "hidden" in body:
         db.ex("UPDATE persons SET hidden=? WHERE id=?", (1 if body["hidden"] else 0, target))
     if "unmatched" in body:
@@ -138,30 +150,69 @@ def person_faces(person_id: int, offset: int = 0, limit: int = 200, user: User =
     return [dict(r) for r in rows]
 
 
+def _match_word(sim: float) -> str:
+    from .. import settings
+    thr = settings.similarity_threshold()
+    return "strong" if sim >= thr - 0.04 else "good" if sim >= thr - 0.09 else "maybe"
+
+
+def _possible(min_faces: int):
+    """Unnamed groups that look like someone already named: [(sim, person_row, suggestion)], best first."""
+    cache = cluster.named_cache()
+    if not cache["ids"]:
+        return [], cache
+    rows = db.q("SELECT * FROM persons WHERE name IS NULL AND unmatched=0 AND hidden=0 AND face_count > 0 AND centroid IS NOT NULL")
+    if not rows:
+        return [], cache
+    nots = cluster.not_people(r["id"] for r in rows)
+    out = []
+    for r in rows:
+        s = cluster.suggestion_for(r["centroid"], cache, nots.get(r["id"]))
+        if s:
+            out.append((s[2], r, s))
+    out.sort(key=lambda x: (-x[0], -x[1]["face_count"]))
+    return out, cache
+
+
 @router.get("/admin/faces")
 def face_groups(tab: str = "needs", offset: int = 0, limit: int = 60, sort: str = "count", user: User = Depends(admin_user)):
-    """Groups for Library > Faces. tab: needs | named | unmatched | single"""
+    """Groups for Library > Faces. tab: needs | possible | named | unmatched | single | hidden"""
     from .. import settings
     min_faces = int(settings.get("cluster_min_faces"))
+    limit = max(1, min(limit, 400))
     where = {
         "needs": f"name IS NULL AND unmatched=0 AND hidden=0 AND face_count >= {min_faces}",
+        "possible": None,
         "named": "name IS NOT NULL",
         "unmatched": "name IS NULL AND unmatched=1",
         "single": f"name IS NULL AND unmatched=0 AND hidden=0 AND face_count > 0 AND face_count < {min_faces}",
         "hidden": "hidden=1",
-    }.get(tab)
-    if where is None:
+    }
+    if tab not in where:
         raise HTTPException(400, "Unknown tab.")
-    order = "created_at DESC" if sort == "new" else "face_count DESC, id"
-    rows = db.q(f"SELECT * FROM persons WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?", (limit, offset))
+    possible, cache = _possible(min_faces)
+    if tab == "possible":
+        page = possible[offset:offset + limit]
+        rows = [x[1] for x in page]
+        sugg = {x[1]["id"]: x[2] for x in page}
+    else:
+        order = "created_at DESC" if sort == "new" else "face_count DESC, id"
+        rows = db.q(f"SELECT * FROM persons WHERE {where[tab]} ORDER BY {order} LIMIT ? OFFSET ?", (limit, offset))
+        sugg = {}
+        if tab in ("needs", "single", "unmatched") and cache["ids"]:
+            nots = cluster.not_people(r["id"] for r in rows)
+            for r in rows:
+                s = cluster.suggestion_for(r["centroid"], cache, nots.get(r["id"]))
+                if s:
+                    sugg[r["id"]] = s
     counts = {
-        "needs": db.val(f"SELECT COUNT(*) FROM persons WHERE name IS NULL AND unmatched=0 AND hidden=0 AND face_count >= {min_faces}", default=0),
+        "needs": db.val(f"SELECT COUNT(*) FROM persons WHERE {where['needs']}", default=0),
+        "possible": len(possible),
         "named": db.val("SELECT COUNT(*) FROM persons WHERE name IS NOT NULL", default=0),
         "unmatched": db.val("SELECT COUNT(*) FROM persons WHERE name IS NULL AND unmatched=1", default=0),
-        "single": db.val(f"SELECT COUNT(*) FROM persons WHERE name IS NULL AND unmatched=0 AND hidden=0 AND face_count > 0 AND face_count < {min_faces}", default=0),
+        "single": db.val(f"SELECT COUNT(*) FROM persons WHERE {where['single']}", default=0),
         "hidden": db.val("SELECT COUNT(*) FROM persons WHERE hidden=1", default=0),
     }
-    cache = cluster.named_cache() if tab in ("needs", "single", "unmatched") else None
     out = []
     for r in rows:
         samples = [x["id"] for x in db.q("SELECT id FROM faces WHERE person_id=? AND rejected=0 AND id<>? "
@@ -171,10 +222,9 @@ def face_groups(tab: str = "needs", offset: int = 0, limit: int = 60, sort: str 
         item = _person_out(r)
         item.update(samples=samples, photos=years["photos"], years=(f"{years['y1']}" if years["y1"] == years["y2"]
                                                                     else f"{years['y1']} – {years['y2']}") if years["y1"] else "")
-        if cache is not None:
-            s = cluster.suggestion_for(r["centroid"], cache)
-            if s:
-                item["suggest"] = {"id": s[0], "name": s[1]}
+        s = sugg.get(r["id"])
+        if s:
+            item["suggest"] = {"id": s[0], "name": s[1], "match": _match_word(s[2])}
         out.append(item)
     return {"items": out, "counts": counts}
 

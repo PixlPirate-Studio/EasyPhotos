@@ -380,7 +380,7 @@ def resolve_duplicates_bulk(body: dict, user: User = Depends(admin_user)):
         todo = []
         for g in body.get("groups") or []:
             try:
-                todo.append((int(g["id"]), int(g["keep"]) if g.get("keep") else None))
+                todo.append((int(g["id"]), "all" if g.get("delete_all") else (int(g["keep"]) if g.get("keep") else None)))
             except (KeyError, TypeError, ValueError):
                 continue
     done, moved, errors = 0, 0, []
@@ -395,9 +395,12 @@ def resolve_duplicates_bulk(body: dict, user: User = Depends(admin_user)):
         ids = [m["id"] for m in members]
         if len(ids) < 2:
             continue
-        if keep not in ids:
-            keep = _suggest_keep(members)
-        others = [i for i in ids if i != keep]
+        if keep == "all" and action == "delete":
+            others = ids  # "Delete both": every copy goes to the Recycle Bin
+        else:
+            if keep not in ids:
+                keep = _suggest_keep(members)
+            others = [i for i in ids if i != keep]
         if action == "hide":
             db.exmany("UPDATE assets SET hidden=1 WHERE id=?", [(a,) for a in others])
             db.ex("UPDATE dup_groups SET status='resolved' WHERE id=?", (gid,))
@@ -423,9 +426,10 @@ def resolve_duplicate(gid: int, body: dict, user: User = Depends(admin_user)):
     action = body.get("action")
     members = [r["asset_id"] for r in db.q("SELECT asset_id FROM dup_members WHERE group_id=?", (gid,))]
     keep = int(body.get("keep") or 0)
-    if action in ("hide", "delete") and keep not in members:
+    delete_all = action == "delete" and body.get("delete_all") is True
+    if action in ("hide", "delete") and keep not in members and not delete_all:
         raise HTTPException(400, "Choose which copy to keep.")
-    others = [m for m in members if m != keep]
+    others = members if delete_all else [m for m in members if m != keep]
     if action == "hide":
         db.exmany("UPDATE assets SET hidden=1 WHERE id=?", [(a,) for a in others])
         db.ex("UPDATE dup_groups SET status='resolved' WHERE id=?", (gid,))

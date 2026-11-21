@@ -316,3 +316,7 @@ main.content{flex:1 1 auto;min-width:0;padding:20px 28px 60px}
 
 .dupbar{position:sticky;bottom:16px;z-index:6;flex-direction:row;align-items:center;flex-wrap:wrap;gap:8px;border-color:var(--accent);margin-top:16px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
 @media (max-width:900px){.dupbar{bottom:calc(var(--tabbar) + env(safe-area-inset-bottom) + 10px)}}
+.fcard .suggest-box{display:flex;flex-direction:column;gap:8px;padding:10px;border-radius:12px;background:rgba(245,163,92,.08);border:1px solid rgba(245,163,92,.25)}
+.dupcopy.gone{outline:2px solid var(--red,#F26D6D);opacity:.75}
+.dupcopy.gone .tag{background:var(--red,#F26D6D);color:#fff}
+.btn.danger-text{color:var(--red,#F26D6D)}
