@@ -77,6 +77,10 @@ export async function person(el, p) {
       h('button', { class: 'btn', onclick: () => chooseCover(p.id, pr.name, () => go(`#/people/${p.id}`)) }, icon('people'), 'Choose picture'),
       h('a', { class: 'btn', href: `#/admin/faces/${p.id}` }, icon('scan'), 'Review faces'),
       h('button', { class: 'btn ghost', onclick: async () => {
+        if (!await confirmDialog({ title: `Remove the name “${pr.name}”?`, text: 'Their faces go back into an unnamed group in Library › Faces, so you can name them again. No photos are changed.', confirmLabel: 'Remove name', danger: true })) return;
+        try { await api(`/api/people/${p.id}`, { method: 'PATCH', body: { name: '' } }); toast('Name removed.'); go(`#/admin/faces/${p.id}`); } catch (e) { errToast(e); }
+      } }, 'Remove name'),
+      h('button', { class: 'btn ghost', onclick: async () => {
         try { await api(`/api/people/${p.id}`, { method: 'PATCH', body: { hidden: !pr.hidden } }); toast(pr.hidden ? 'Shown again.' : 'Hidden from People.'); go('#/people'); } catch (e) { errToast(e); }
       } }, icon(pr.hidden ? 'eye' : 'eyeoff'), pr.hidden ? 'Unhide' : 'Hide'));
   }

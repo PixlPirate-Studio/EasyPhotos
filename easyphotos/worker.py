@@ -99,7 +99,7 @@ class Worker:
             log.debug("Command: %s %s", name, args)
             friendly = {"scan": "Scan for new photos requested", "find_faces": "Find faces started", "rescan_faces": "Re-scan of all faces started",
                         "recluster": "Re-grouping faces", "rebuild_thumbs": "Rebuilding all thumbnails", "duplicates": "Duplicate check requested",
-                        "refresh_places": "Updating place names"}.get(name, name)
+                        "refresh_places": "Updating place names", "forget_names": "Removing all names and starting over"}.get(name, name)
             activity([("command", "info", friendly)])
             if name == "stop_scan":
                 self.scan_stop.set()
@@ -120,6 +120,16 @@ class Worker:
                 db.ex("DELETE FROM persons WHERE name IS NULL")
                 db.ex("UPDATE assets SET face_status=0")
                 settings.set_many({"faces_started": True})
+            elif name == "forget_names":
+                set_status("faces", "running", "Removing all names and re-grouping faces…")
+                ids = [x["asset_id"] for x in db.q("SELECT DISTINCT f.asset_id FROM faces f JOIN persons p ON p.id=f.person_id WHERE p.name IS NOT NULL")]
+                with db.tx() as c:
+                    c.execute("UPDATE persons SET name=NULL, unmatched=0, hidden=0")
+                    c.execute("UPDATE faces SET confirmed=0")
+                n = cluster.recluster_unnamed()
+                xmp.mark_dirty(ids)
+                activity([("faces", "info", f"All names removed. {n:,} faces re-grouped into unnamed groups.")])
+                set_status("faces", "idle", f"Names removed; {n:,} faces re-grouped")
             elif name == "recluster":
                 set_status("faces", "running", "Re-grouping faces…")
                 n = cluster.recluster_unnamed()

@@ -218,7 +218,7 @@ def browse(path: str = "", user: User = Depends(admin_user)):
 
 # ------------------------------------------------------------ jobs
 
-JOB_NAMES = {"scan", "stop_scan", "find_faces", "rescan_faces", "recluster", "rebuild_thumbs", "duplicates", "refresh_places"}
+JOB_NAMES = {"forget_names", "scan", "stop_scan", "find_faces", "rescan_faces", "recluster", "rebuild_thumbs", "duplicates", "refresh_places"}
 
 
 @router.get("/jobs")
@@ -274,6 +274,8 @@ def run_job(name: str, body: dict | None = None, user: User = Depends(admin_user
         raise HTTPException(400, "Unknown job.")
     if name == "find_faces":
         settings.set_many({"faces_started": True, "faces_enabled": True})
+    if name == "forget_names" and (body or {}).get("confirm") != "RESET":
+        raise HTTPException(400, "Type RESET to confirm.")
     db.ex("INSERT INTO job_commands(name, args, created_at) VALUES (?,?,?)", (name, json.dumps(body or {}), time.time()))
     return {"ok": True}
 

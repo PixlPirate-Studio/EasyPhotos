@@ -106,7 +106,11 @@ def edit_person(person_id: int, body: dict, user: User = Depends(admin_user)):
                 return same_name_response(e)
             audit(None, user, "named a person %s%s", body["name"].strip(), " (merged)" if target != person_id else "")
         else:
-            db.ex("UPDATE persons SET name=NULL WHERE id=?", (person_id,))
+            # Remove the name: back to an unnamed group the AI can merge or split again.
+            db.ex("UPDATE persons SET name=NULL, unmatched=0 WHERE id=?", (person_id,))
+            db.ex("UPDATE faces SET confirmed=0 WHERE person_id=?", (person_id,))
+            xmp.mark_dirty(r["asset_id"] for r in db.q("SELECT DISTINCT asset_id FROM faces WHERE person_id=?", (person_id,)))
+            audit(None, user, "removed the name from person %d", person_id)
     if "hidden" in body:
         db.ex("UPDATE persons SET hidden=? WHERE id=?", (1 if body["hidden"] else 0, target))
     if "unmatched" in body:

@@ -760,7 +760,14 @@ export async function settings(el) {
         h('label', { class: 'field' }, 'Smallest group shown in “Needs a name”', sel('cluster_min_faces', [[2, '2 faces'], [3, '3 faces'], [5, '5 faces'], [10, '10 faces']])),
         h('div', { class: 'row' },
           h('button', { class: 'btn small', onclick: async () => { if (await confirmDialog({ title: 'Look for faces again?', text: 'Faces in groups without a name are thrown away and every photo is checked again. Named people are kept.', confirmLabel: 'Re-scan faces' })) { await post('/api/admin/jobs/rescan_faces'); toast('Re-scanning faces.'); } } }, 'Re-scan faces'),
-          h('button', { class: 'btn small ghost', onclick: async () => { await post('/api/admin/jobs/recluster'); toast('Re-grouping faces.'); } }, 'Re-group now')))),
+          h('button', { class: 'btn small ghost', onclick: async () => { await post('/api/admin/jobs/recluster'); toast('Re-grouping faces.'); } }, 'Re-group now')),
+        h('div', { class: 'row', style: { paddingTop: '12px', borderTop: '1px solid var(--line)' } },
+          h('div', { class: 'grow' }, h('b', { style: { fontWeight: 500 } }, 'Start naming over'),
+            h('div', { class: 'hint' }, 'Removes every name. Faces stay found and go back into unnamed groups. No photos are touched.')),
+          h('button', { class: 'btn small danger', onclick: async () => {
+            if (!await confirmDialog({ title: 'Remove all names and start over?', text: 'Every person loses their name and all faces go back into unnamed groups for you to name again. Faces don’t have to be found again, and no photos are changed. This can’t be undone.', confirmLabel: 'Remove all names', danger: true, typeWord: 'RESET' })) return;
+            try { await post('/api/admin/jobs/forget_names', { confirm: 'RESET' }); toast('Removing names. The groups appear in Library › Faces in a moment.'); } catch (e) { errToast(e); }
+          } }, 'Remove all names…')))),
     h('div', { class: 'cards', style: { marginTop: '20px' } },
       h('section', { class: 'card' }, h('h2', {}, 'Background speed'),
         h('span', { class: 'hint', style: { marginTop: '-10px' } }, 'Face finding, thumbnails and duplicate checks. They never stop, they just let your other apps go first.'),
