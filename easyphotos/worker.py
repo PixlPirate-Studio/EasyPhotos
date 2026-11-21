@@ -78,6 +78,8 @@ class Worker:
         self.scan_stop = threading.Event()
         self.cleanup_threads = {}
         self.quality_running = False
+        self._face_batch_ids = []
+        self._quality_ids = []
         self.cleanup_stops = {}
         self.last_beat = 0.0
         self.threads = 1
@@ -274,11 +276,23 @@ class Worker:
 
     # ------------------------------------------------------------ faces
     def quality_batch(self, s, threads: int) -> bool:
-        """Checks photos for blur and darkness (quick: about 30 minutes for 80,000 photos)."""
+        """Checks photos for blur and darkness (quick: about 30 minutes for 80,000 photos).
+        If a whole batch fails, those photos are skipped so face finding is never held up."""
+        self._quality_ids = []
+        try:
+            return self._quality_batch(s, threads)
+        except Exception as e:
+            log.exception("Blur check failed for a batch: %s", e)
+            if self._quality_ids:
+                db.ex(f"UPDATE assets SET quality_status=-1 WHERE id IN ({','.join('?' * len(self._quality_ids))})", self._quality_ids)
+            return False
+
+    def _quality_batch(self, s, threads: int) -> bool:
         if not s.get("quality_enabled", True):
             return False
         db.ex("UPDATE assets SET quality_status=2 WHERE quality_status=0 AND (kind<>'image' OR is_live_part=1) AND meta_status=1")
         rows = db.q("SELECT id FROM assets WHERE quality_status=0 AND meta_status=1 AND kind='image' AND deleted_at IS NULL LIMIT 64")
+        self._quality_ids = [r["id"] for r in rows]
         if not rows:
             if self.quality_running:
                 self.quality_running = False
@@ -309,12 +323,30 @@ class Worker:
         return True
 
     def faces_batch(self, s, threads: int) -> bool:
+        """Wrapper: if a whole batch fails (not just one photo), mark those photos
+        as failed with the reason and move on, so the queue can never jam."""
+        self._face_batch_ids = []
+        try:
+            return self._faces_batch(s, threads)
+        except Exception as e:
+            ids = self._face_batch_ids
+            log.exception("Face finding failed for a batch of %d photos: %s", len(ids), e)
+            if ids:
+                marks = ",".join("?" * len(ids))
+                db.ex(f"DELETE FROM faces WHERE asset_id IN ({marks}) AND manual=0 AND person_id IS NULL", ids)
+                db.ex(f"UPDATE assets SET face_status=-1, error=? WHERE id IN ({marks}) AND face_status=0",
+                      [f"Face finding failed: {type(e).__name__}: {e}"[:300]] + ids)
+                activity([("faces", "error", f"Face finding failed for {len(ids)} photos ({type(e).__name__}: {e}). Skipped them; see Logs.")])
+            return True
+
+    def _faces_batch(self, s, threads: int) -> bool:
         if not (s["faces_enabled"] and s["faces_started"]):
             return False
         # Videos and Live Photo halves are skipped for faces.
         db.ex("UPDATE assets SET face_status=2 WHERE face_status=0 AND (kind='video' OR is_live_part=1) AND meta_status=1")
         rows = db.q("SELECT id, width, height FROM assets WHERE face_status=0 AND meta_status=1 AND deleted_at IS NULL "
                     "ORDER BY taken_ts DESC LIMIT 16")
+        self._face_batch_ids = [r["id"] for r in rows]
         if not rows:
             pending_meta = db.val("SELECT COUNT(*) FROM assets WHERE meta_status=0 AND deleted_at IS NULL", default=0)
             if not pending_meta:
@@ -365,7 +397,7 @@ class Worker:
                     db.ex("DELETE FROM faces WHERE asset_id=? AND manual=0 AND person_id IS NULL", (aid,))
                 except Exception:
                     pass
-                db.ex("UPDATE assets SET face_status=-1, error=? WHERE id=?", (str(e)[:300], aid))
+                db.ex("UPDATE assets SET face_status=-1, error=? WHERE id=?", (f"Face finding failed: {type(e).__name__}: {e}"[:300], aid))
                 entries.append(("faces", "warning", f"Face finding failed for {rel_label(paths.get(aid))}: {e}"))
         activity(entries)
         cl.finish()
