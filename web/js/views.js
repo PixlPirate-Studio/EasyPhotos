@@ -1,5 +1,5 @@
 // Main pages everyone can see.
-import { h, icon, api, thumbUrl, faceUrl, img, personFace, toast, errToast, promptDialog, confirmDialog, MONTHS_LONG, DAYS, num, fmtDay } from './ui.js';
+import { h, icon, api, nameSafely, thumbUrl, faceUrl, img, personFace, toast, errToast, promptDialog, confirmDialog, MONTHS_LONG, DAYS, num, fmtDay } from './ui.js';
 import { PhotoGrid } from './grid.js';
 import { state, loadLeaflet, TILE_URL, TILE_ATTR } from './state.js';
 import { openViewer } from './viewer.js';
@@ -68,7 +68,11 @@ export async function person(el, p) {
       h('button', { class: 'btn', onclick: async () => {
         const name = await promptDialog({ title: 'Rename', label: 'Name', value: pr.name || '' });
         if (!name) return;
-        try { const r = await api(`/api/people/${p.id}`, { method: 'PATCH', body: { name } }); toast(r.merged ? `Merged into ${name}.` : 'Renamed.'); go(`#/people/${r.id}`); } catch (e) { errToast(e); }
+        try {
+          const r = await nameSafely(name, (extra) => api(`/api/people/${p.id}`, { method: 'PATCH', body: { name, ...extra } }));
+          if (!r) return;
+          toast(r.merged ? `Merged into ${name}.` : 'Renamed.'); go(`#/people/${r.id}`);
+        } catch (e) { errToast(e); }
       } }, icon('edit'), 'Rename'),
       h('a', { class: 'btn', href: `#/admin/faces/${p.id}` }, icon('scan'), 'Review faces'),
       h('button', { class: 'btn ghost', onclick: async () => {

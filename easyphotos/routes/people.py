@@ -2,6 +2,7 @@
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from PIL import Image
 
 from .. import cluster, db, media, xmp
@@ -40,15 +41,50 @@ def person(person_id: int, user: User = Depends(current_user)):
     return _person_out(r)
 
 
-def _rename(person_id: int, name: str) -> int:
-    """Names a person. If someone already has that name, the two are merged."""
+class SameName(Exception):
+    """Someone already has this name: the admin must say if it's the same person."""
+
+    def __init__(self, name, choices):
+        self.name, self.choices = name, choices
+
+
+def _same_name(name: str, exclude_id: int | None = None):
+    rows = db.q("SELECT id, name, face_count, cover_face_id FROM persons WHERE name=? AND id<>? ORDER BY face_count DESC",
+                (name, exclude_id or 0))
+    return [{"id": r["id"], "name": r["name"], "count": r["face_count"], "cover": r["cover_face_id"]} for r in rows]
+
+
+def same_name_response(e: SameName):
+    return JSONResponse(status_code=409, content={
+        "error": f"There is already someone named {e.name}. Is this the same person?",
+        "name": e.name, "choices": e.choices})
+
+
+def _target_for_name(name: str, body: dict, exclude_id: int | None = None) -> int | None:
+    """Who a typed name refers to. Returns a person id, or None = make a new person.
+    body may say {"person_id": id} (same person) or {"separate": true} (different person)."""
+    if body.get("person_id"):
+        return int(body["person_id"])
+    if body.get("merge_into"):
+        return int(body["merge_into"])
+    if body.get("separate"):
+        return None
+    choices = _same_name(name, exclude_id)
+    if choices:
+        raise SameName(name, choices)
+    return None
+
+
+def _rename(person_id: int, name: str, body: dict | None = None) -> int:
+    """Names a person. If someone already has that name, asks whether they are the
+    same person (merge) or a different person who happens to share the name."""
     name = name.strip()[:80]
     if not name:
         raise HTTPException(400, "Type a name.")
-    other = db.q1("SELECT id FROM persons WHERE name=? AND id<>?", (name, person_id))
-    if other:
-        cluster.merge_persons(person_id, other["id"])
-        target = other["id"]
+    target_existing = _target_for_name(name, body or {}, exclude_id=person_id)
+    if target_existing and target_existing != person_id:
+        cluster.merge_persons(person_id, target_existing)
+        target = target_existing
     else:
         db.ex("UPDATE persons SET name=?, unmatched=0 WHERE id=?", (name, person_id))
         target = person_id
@@ -64,7 +100,10 @@ def edit_person(person_id: int, body: dict, user: User = Depends(admin_user)):
     target = person_id
     if "name" in body:
         if body["name"]:
-            target = _rename(person_id, body["name"])
+            try:
+                target = _rename(person_id, body["name"], body)
+            except SameName as e:
+                return same_name_response(e)
             audit(None, user, "named a person %s%s", body["name"].strip(), " (merged)" if target != person_id else "")
         else:
             db.ex("UPDATE persons SET name=NULL WHERE id=?", (person_id,))
@@ -184,8 +223,12 @@ def edit_face(face_id: int, body: dict, user: User = Depends(admin_user)):
         db.ex("UPDATE faces SET person_id=?, confirmed=1 WHERE id=?", (new, face_id))
     elif body.get("name"):
         name = body["name"].strip()[:80]
-        row = db.q1("SELECT id FROM persons WHERE name=?", (name,))
-        new = row["id"] if row else db.ex("INSERT INTO persons(name, created_at) VALUES (?,?)", (name, time.time())).lastrowid
+        try:
+            new = _target_for_name(name, body)
+        except SameName as e:
+            return same_name_response(e)
+        if new is None:
+            new = db.ex("INSERT INTO persons(name, created_at) VALUES (?,?)", (name, time.time())).lastrowid
         db.ex("UPDATE faces SET person_id=?, confirmed=1 WHERE id=?", (new, face_id))
     else:
         raise HTTPException(400, "Nothing to change.")
@@ -210,8 +253,12 @@ def add_face(asset_id: int, body: dict, user: User = Depends(admin_user)):
     if body.get("person_id"):
         person_id = int(body["person_id"])
     elif name:
-        row = db.q1("SELECT id FROM persons WHERE name=?", (name,))
-        person_id = row["id"] if row else db.ex("INSERT INTO persons(name, created_at) VALUES (?,?)", (name, time.time())).lastrowid
+        try:
+            person_id = _target_for_name(name, body)
+        except SameName as e:
+            return same_name_response(e)
+        if person_id is None:
+            person_id = db.ex("INSERT INTO persons(name, created_at) VALUES (?,?)", (name, time.time())).lastrowid
     fid = db.ex("INSERT INTO faces(asset_id, person_id, x1, y1, x2, y2, score, manual, confirmed, created_at) "
                 "VALUES (?,?,?,?,?,?,1.0,1,1,?)", (asset_id, person_id, x1, y1, x2, y2, time.time())).lastrowid
     try:

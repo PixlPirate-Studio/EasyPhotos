@@ -81,7 +81,7 @@ export const LOGO = () => icon('photos');
 // ---------------------------------------------------------------- API
 
 export class ApiError extends Error {
-  constructor(msg, status) { super(msg); this.status = status; }
+  constructor(msg, status, data = null) { super(msg); this.status = status; this.data = data; }
 }
 
 export async function api(path, { method = 'GET', body, signal } = {}) {
@@ -93,7 +93,7 @@ export async function api(path, { method = 'GET', body, signal } = {}) {
   if (ct.includes('json')) data = await res.json(); else data = await res.text();
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith('/api/auth')) { window.dispatchEvent(new CustomEvent('ep:signedout')); }
-    throw new ApiError((data && data.error) || `Something went wrong (${res.status})`, res.status);
+    throw new ApiError((data && data.error) || `Something went wrong (${res.status})`, res.status, data);
   }
   return data;
 }
@@ -267,4 +267,35 @@ export function personFace(coverId, size = 64) {
 export function download(url) {
   const a = h('a', { href: url, download: '' });
   document.body.append(a); a.click(); a.remove();
+}
+
+// ---------------------------------------------------------------- people with the same name
+
+// Asks whether a typed name means an existing person or a different person who
+// shares the name. Resolves { person_id } (same person), { separate: true }, or null (cancel).
+export function sameNameDialog(name, choices) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { done = true; m.close(); resolve(v); };
+    const body = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
+      h('p', { style: { margin: 0, color: 'var(--text2)' } }, `You already have ${choices.length === 1 ? 'someone' : `${choices.length} people`} named “${name}”. Is this the same person?`),
+      choices.map(c => h('button', { class: 'btn', style: { justifyContent: 'flex-start', height: 'auto', padding: '10px 12px' }, onclick: () => finish({ person_id: c.id }) },
+        c.cover ? h('img', { src: faceUrl(c.cover), alt: '', style: { width: '48px', height: '48px', borderRadius: '50%', objectFit: 'cover' } }) : null,
+        h('span', { style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-start' } }, h('span', {}, `Yes, the same ${c.name}`), h('span', { class: 'hint' }, `${(c.count || 0).toLocaleString()} faces`)))),
+      h('button', { class: 'btn primary', onclick: () => finish({ separate: true }) }, `No, a different person also named ${name}`),
+      h('span', { class: 'hint' }, 'Different people can share a name. EasyPhotos tells them apart by their faces, not their names.'));
+    const m = modal({ title: `Which ${name}?`, body, onClose: () => { if (!done) resolve(null); } });
+  });
+}
+
+// Runs a naming request; if the name is already used, asks which person is meant and tries again.
+// send(extra) must make the request with the extra fields added to its body.
+export async function nameSafely(name, send) {
+  try { return await send({}); }
+  catch (e) {
+    if (e.status !== 409 || !e.data || !e.data.choices) throw e;
+    const pick = await sameNameDialog(e.data.name || name, e.data.choices);
+    if (!pick) return null;
+    return await send(pick);
+  }
 }

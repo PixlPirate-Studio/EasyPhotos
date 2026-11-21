@@ -1,5 +1,5 @@
 // Admin pages.
-import { h, icon, api, thumbUrl, faceUrl, img, toast, errToast, modal, confirmDialog, promptDialog, fmtBytes, fmtAgo, fmtEta, num, fmtDateTime } from './ui.js';
+import { h, icon, api, nameSafely, thumbUrl, faceUrl, img, toast, errToast, modal, confirmDialog, promptDialog, fmtBytes, fmtAgo, fmtEta, num, fmtDateTime } from './ui.js';
 import { PhotoGrid } from './grid.js';
 import { state } from './state.js';
 import { go } from './router.js';
@@ -335,7 +335,8 @@ export async function faces(el, p, q) {
       const name = input.value.trim();
       if (!name) { toast('Type a name first.', true); return; }
       try {
-        const r = await api(`/api/people/${item.id}`, { method: 'PATCH', body: { name } });
+        const r = await nameSafely(name, (extra) => api(`/api/people/${item.id}`, { method: 'PATCH', body: { name, ...extra } }));
+        if (!r) return;
         toast(r.merged ? `Added to ${name}.` : `Saved as ${name}.`);
         if (tab !== 'named') c.remove();
       } catch (e) { errToast(e); }
@@ -372,7 +373,11 @@ export async function faceGroup(el, p) {
     h('button', { class: 'btn', onclick: async () => {
       const name = await promptDialog({ title: pr.name ? 'Rename' : 'Name this person', label: 'Name', value: pr.name || '' });
       if (!name) return;
-      try { const r = await api(`/api/people/${p.id}`, { method: 'PATCH', body: { name } }); toast(r.merged ? `Merged into ${name}.` : 'Saved.'); go(`#/admin/faces/${r.id}`); } catch (e) { errToast(e); }
+      try {
+        const r = await nameSafely(name, (extra) => api(`/api/people/${p.id}`, { method: 'PATCH', body: { name, ...extra } }));
+        if (!r) return;
+        toast(r.merged ? `Merged into ${name}.` : 'Saved.'); go(`#/admin/faces/${r.id}`);
+      } catch (e) { errToast(e); }
     } }, icon('edit'), pr.name ? 'Rename' : 'Name'),
     pr.name ? h('a', { class: 'btn', href: `#/people/${p.id}` }, 'See photos') : null,
   ].filter(Boolean)), bar, grid);
@@ -383,7 +388,11 @@ export async function faceGroup(el, p) {
       h('button', { class: 'btn small', onclick: async () => {
         const name = await promptDialog({ title: 'Move to…', label: 'Who are they?', placeholder: 'Type a name' });
         if (!name) return;
-        for (const f of sel) await api(`/api/faces/${f}`, { method: 'PATCH', body: { name } });
+        const ids = [...sel];
+        // Ask once which person is meant, then move every selected face there.
+        const first = await nameSafely(name, (extra) => api(`/api/faces/${ids[0]}`, { method: 'PATCH', body: { name, ...extra } })).catch(errToast);
+        if (!first) return;
+        for (const f of ids.slice(1)) await api(`/api/faces/${f}`, { method: 'PATCH', body: { person_id: first.person_id } });
         toast(`Moved to ${name}.`); reload();
       } }, 'Move to someone else'),
       h('button', { class: 'btn small', onclick: async () => { for (const f of sel) await api(`/api/faces/${f}`, { method: 'PATCH', body: { unassign: true } }); toast('Removed from this person.'); reload(); } }, 'Remove from this person'),

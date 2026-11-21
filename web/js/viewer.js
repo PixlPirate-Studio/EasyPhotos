@@ -1,5 +1,5 @@
 // Full-screen photo viewer with details, faces, editing (admin) and face drawing.
-import { h, icon, api, previewUrl, faceUrl, fmtDateTime, fmtBytes, fmtDuration, placeText, toast, errToast, modal, confirmDialog, download, MONTHS_LONG } from './ui.js';
+import { h, icon, api, nameSafely, previewUrl, faceUrl, fmtDateTime, fmtBytes, fmtDuration, placeText, toast, errToast, modal, confirmDialog, download, MONTHS_LONG } from './ui.js';
 import { state, loadLeaflet, TILE_URL, TILE_ATTR } from './state.js';
 import { go, hashWithPhoto } from './router.js';
 
@@ -417,7 +417,8 @@ class Viewer {
       if (!r || r.x2 - r.x1 < 0.01 || r.y2 - r.y1 < 0.01) { box.remove(); box = null; return; }
       const b = box; box = null;
       this.askName('New face you marked', '', async (name, personId) => {
-        await api(`/api/assets/${this.item.id}/faces`, { method: 'POST', body: { ...r, name, person_id: personId } });
+        const res = await nameSafely(name, (extra) => api(`/api/assets/${this.item.id}/faces`, { method: 'POST', body: { ...r, name, person_id: personId, ...extra } }));
+        if (!res) { b.remove(); return; }
         toast('Face added. It also helps EasyPhotos recognise this person.');
         b.remove();
         this.setDrawing(false);
@@ -435,7 +436,8 @@ class Viewer {
   nameFace(f) {
     if (!state.user.is_admin) return;
     this.askName(f.name ? `Change who this is` : 'Who is this?', f.name || '', async (name, personId) => {
-      await api(`/api/faces/${f.id}`, { method: 'PATCH', body: personId ? { person_id: personId } : { name } });
+      const res = await nameSafely(name, (extra) => api(`/api/faces/${f.id}`, { method: 'PATCH', body: personId ? { person_id: personId } : { name, ...extra } }));
+      if (!res) return;
       toast('Saved.');
       await this.refreshDetail();
     }, null, f.id);
