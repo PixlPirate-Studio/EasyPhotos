@@ -37,6 +37,7 @@ export class PhotoGrid {
 
   mount(parent) {
     parent.append(this.el);
+    state.activeGrid = this; // so a photo opened from the address can use this list for next/previous
     this.io = new IntersectionObserver((ents) => { if (ents.some(e => e.isIntersecting)) this.loadMore(); }, { rootMargin: '1200px' });
     window.addEventListener('resize', this._resize);
     this.reload();
@@ -45,6 +46,7 @@ export class PhotoGrid {
   }
 
   destroy() {
+    if (state.activeGrid === this) state.activeGrid = null;
     this.io && this.io.disconnect();
     window.removeEventListener('resize', this._resize);
     this.clearSelection();

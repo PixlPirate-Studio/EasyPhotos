@@ -20,6 +20,18 @@ export function openViewer(opts) {
 export async function photoFromAddress(photo) {
   if (!photo) { if (current) current.close(true); return; }
   if (current && String(current.item.id) === String(photo)) return;
+  // Opened from the address (reload, shared link, back/forward): find the photo in
+  // the page's own list, so next/previous work like they do after tapping it.
+  const g = state.activeGrid;
+  if (g) {
+    const idx = await findInGrid(g, photo);
+    if (idx >= 0 && !(current && String(current.item.id) === String(photo))) {
+      if (current) current.close(true);
+      current = new Viewer({ items: g.items, index: idx, grid: g, fromAddress: true });
+      current.open();
+      return;
+    }
+  }
   try {
     const d = await api(`/api/assets/${photo}`);
     if (current) current.close(true);
@@ -28,6 +40,22 @@ export async function photoFromAddress(photo) {
   } catch (e) {
     history.replaceState(null, '', hashWithPhoto(null));
   }
+}
+
+const pause = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Where the photo sits in a photo grid's list, loading more of the list if needed
+// (up to a few thousand photos). -1 if it isn't there.
+async function findInGrid(g, photo) {
+  for (let tries = 0; tries < 60; tries++) {
+    if (state.activeGrid !== g) return -1;
+    if (g.loading) { await pause(100); continue; }
+    const idx = g.items.findIndex(i => String(i.id) === String(photo));
+    if (idx >= 0) return idx;
+    if (g.done || g.items.length > 6000) return -1;
+    await g.loadMore();
+  }
+  return -1;
 }
 
 class Viewer {
@@ -128,8 +156,8 @@ class Viewer {
     this.frame = h('div', { class: 'frame' });
     this.media.append(this.frame);
     this.media.append(
-      h('button', { class: 'iconbtn nav prev', 'aria-label': 'Previous photo', onclick: () => this.step(-1) }, icon('back')),
-      h('button', { class: 'iconbtn nav next', 'aria-label': 'Next photo', onclick: () => this.step(1) }, icon('next')));
+      this.index > 0 ? h('button', { class: 'iconbtn nav prev', 'aria-label': 'Previous photo', onclick: () => this.step(-1) }, icon('back')) : null,
+      this.index < this.items.length - 1 || (this.grid && !this.grid.done) ? h('button', { class: 'iconbtn nav next', 'aria-label': 'Next photo', onclick: () => this.step(1) }, icon('next')) : null);
     this.stage = h('div', { class: 'stage' }, top, this.media);
     this.side = h('aside', { class: 'info' + (this.showInfo ? '' : ' hidden'), 'aria-label': 'Photo details' });
     this.root.append(this.stage, this.side);
