@@ -481,7 +481,7 @@ class Worker:
         c = db.q1("SELECT COUNT(*) AS total, SUM(CASE WHEN meta_status=0 THEN 1 ELSE 0 END) AS thumbs_left, "
                   "SUM(CASE WHEN meta_status=-1 THEN 1 ELSE 0 END) AS errors, "
                   "SUM(CASE WHEN kind='image' AND is_live_part=0 THEN 1 ELSE 0 END) AS images, "
-                  "SUM(CASE WHEN face_status=0 THEN 1 ELSE 0 END) AS faces_left FROM assets WHERE deleted_at IS NULL")
+                  "SUM(CASE WHEN (face_status=0 AND meta_status<>-1) THEN 1 ELSE 0 END) AS faces_left FROM assets WHERE deleted_at IS NULL")
         total, tl, fl = c["total"] or 0, c["thumbs_left"] or 0, c["faces_left"] or 0
         scanning = self.scan_thread is not None and self.scan_thread.is_alive()
         faces_on = s["faces_enabled"] and s["faces_started"]

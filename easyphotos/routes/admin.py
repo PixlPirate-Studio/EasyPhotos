@@ -107,7 +107,7 @@ def delete_user(uid: int, user: User = Depends(admin_user)):
 def _lib_out(r):
     stats = db.q1("SELECT COUNT(*) AS n, SUM(CASE WHEN meta_status=0 THEN 1 ELSE 0 END) AS pending, "
                   "SUM(CASE WHEN meta_status=-1 THEN 1 ELSE 0 END) AS errors, "
-                  "SUM(CASE WHEN face_status IN (1,2) THEN 1 ELSE 0 END) AS faces_done "
+                  "SUM(CASE WHEN (face_status IN (1,2,-1) OR meta_status=-1) THEN 1 ELSE 0 END) AS faces_done "
                   "FROM assets WHERE library_id=? AND deleted_at IS NULL", (r["id"],))
     faces = db.val("SELECT COUNT(*) FROM faces f JOIN assets a ON a.id=f.asset_id WHERE a.library_id=? AND f.rejected=0", (r["id"],), 0)
     p = Path(r["path"])
@@ -176,7 +176,7 @@ def remove_library(lid: int, user: User = Depends(admin_user)):
 @router.get("/libraries/{lid}/folders")
 def library_folders(lid: int, user: User = Depends(admin_user)):
     """Every folder in a library with photo counts (including sub-folders)."""
-    rows = db.q("SELECT folder, COUNT(*) AS n, SUM(CASE WHEN face_status IN (1,2) THEN 1 ELSE 0 END) AS fd, "
+    rows = db.q("SELECT folder, COUNT(*) AS n, SUM(CASE WHEN (face_status IN (1,2,-1) OR meta_status=-1) THEN 1 ELSE 0 END) AS fd, "
                 "SUM(CASE WHEN meta_status=0 THEN 1 ELSE 0 END) AS pend "
                 "FROM assets WHERE library_id=? AND deleted_at IS NULL GROUP BY folder", (lid,))
     faces = {r["folder"]: r["n"] for r in db.q(
@@ -229,8 +229,8 @@ def jobs(user: User = Depends(admin_user)):
         "SUM(CASE WHEN meta_status=0 THEN 1 ELSE 0 END) AS meta_pending, "
         "SUM(CASE WHEN meta_status=-1 THEN 1 ELSE 0 END) AS meta_errors, "
         "SUM(CASE WHEN kind='image' AND is_live_part=0 THEN 1 ELSE 0 END) AS images, "
-        "SUM(CASE WHEN face_status=0 THEN 1 ELSE 0 END) AS faces_pending, "
-        "SUM(CASE WHEN face_status IN (1,2,-1) THEN 1 ELSE 0 END) AS faces_done "
+        "SUM(CASE WHEN (face_status=0 AND meta_status<>-1) THEN 1 ELSE 0 END) AS faces_pending, "
+        "SUM(CASE WHEN (face_status IN (1,2,-1) OR meta_status=-1) THEN 1 ELSE 0 END) AS faces_done "
         "FROM assets WHERE deleted_at IS NULL")
     s = settings.get_all()
     face_rate = (st.get("faces") or {}).get("rate")
