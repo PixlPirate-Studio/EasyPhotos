@@ -292,6 +292,50 @@ def edit_face(face_id: int, body: dict, user: User = Depends(admin_user)):
     return {"ok": True, "person_id": new}
 
 
+@router.post("/people/{person_id}/ignore")
+def ignore_person(person_id: int, user: User = Depends(admin_user)):
+    """Trash can on a Faces card: stop asking about everyone in this group.
+    The faces are set aside (not deleted), the photos are untouched."""
+    r = db.q1("SELECT * FROM persons WHERE id=?", (person_id,))
+    if r is None:
+        raise HTTPException(404, "Group not found.")
+    if r["name"]:
+        raise HTTPException(400, "This person has a name. Remove the name first.")
+    ids = [x["id"] for x in db.q("SELECT id FROM faces WHERE person_id=? AND rejected=0", (person_id,))]
+    with db.tx() as c:
+        c.execute("UPDATE faces SET rejected=1, person_id=NULL WHERE person_id=?", (person_id,))
+        c.execute("DELETE FROM persons WHERE id=?", (person_id,))
+    audit(None, user, "removed %d face(s) from face matching", len(ids))
+    return {"ok": True, "face_ids": ids, "person_id": person_id}
+
+
+@router.post("/faces/restore")
+def restore_faces(body: dict, user: User = Depends(admin_user)):
+    """Undo for the trash can: brings set-aside faces back and groups them again."""
+    ids = [int(x) for x in (body.get("ids") or [])][:5000]
+    if not ids:
+        return {"ok": True}
+    marks = ",".join("?" * len(ids))
+    pid = int(body.get("person_id") or 0)
+    if pid:
+        # put the whole group back exactly as it was
+        if db.q1("SELECT id FROM persons WHERE id=?", (pid,)) is None:
+            db.ex("INSERT INTO persons(id, name, created_at) VALUES (?, NULL, ?)", (pid, time.time()))
+        elif db.val("SELECT name FROM persons WHERE id=?", (pid,)):
+            pid = 0
+    if pid:
+        db.ex(f"UPDATE faces SET rejected=0, person_id=? WHERE id IN ({marks})", [pid] + ids)
+        cluster.recompute_person(pid)
+        return {"ok": True, "person_id": pid}
+    db.ex(f"UPDATE faces SET rejected=0, person_id=NULL WHERE id IN ({marks})", ids)
+    rows = db.q(f"SELECT id, embedding FROM faces WHERE id IN ({marks}) AND length(embedding) > 0", ids)
+    cl = cluster.Clusterer()
+    for r in rows:
+        cl.assign(r["id"], cluster.from_blob(r["embedding"]))
+    cl.finish()
+    return {"ok": True}
+
+
 @router.post("/assets/{asset_id}/faces")
 def add_face(asset_id: int, body: dict, user: User = Depends(admin_user)):
     """A face you drew by hand. Its fingerprint is worked out in the background."""

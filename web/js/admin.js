@@ -358,13 +358,43 @@ export async function faces(el, p, q) {
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
     const matchWord = { strong: 'Strong match', good: 'Good match', maybe: 'Maybe' };
+    const faceCount = item.count || 1;
+    const trashAll = async (e) => {
+      e.stopPropagation();
+      if (faceCount > 1 && !await confirmDialog({ title: `Stop asking about this person?`, text: `Removes all ${num(faceCount)} of their faces from face matching. The photos stay. You can undo right after.`, confirmLabel: 'Remove faces', danger: true })) return;
+      try {
+        const r = await post(`/api/people/${item.id}/ignore`);
+        const at = c.nextSibling, parent = c.parentNode;
+        c.remove();
+        toast(faceCount > 1 ? `Removed ${num(r.face_ids.length)} faces. Photos untouched.` : 'Face removed. The photo is untouched.', false, { label: 'Undo', run: async () => {
+          try { await post('/api/faces/restore', { ids: r.face_ids, person_id: r.person_id }); parent.insertBefore(c, at); toast('Brought back.'); } catch (err) { errToast(err); }
+        } });
+      } catch (err) { errToast(err); }
+    };
+    const trashOne = async (e, fid, wrap) => {
+      e.stopPropagation();
+      try {
+        await api(`/api/faces/${fid}`, { method: 'PATCH', body: { reject: true } });
+        wrap.classList.add('gone');
+        toast('Face removed. The photo is untouched.', false, { label: 'Undo', run: async () => {
+          try { await post('/api/faces/restore', { ids: [fid], person_id: item.id }); wrap.classList.remove('gone'); } catch (err) { errToast(err); }
+        } });
+      } catch (err) { errToast(err); }
+    };
+    const trashBtn = (label, fn) => h('button', { class: 'face-trash', title: label, 'aria-label': label, onclick: fn }, icon('trash'));
     c.append(
       h('div', { class: 'top', onclick: () => { remember(); go(`#/admin/faces/${item.id}`); } },
-        item.cover ? h('img', { class: 'cover', src: faceUrl(item.cover), alt: '', loading: 'lazy', decoding: 'async', width: 72, height: 72 }) : h('div', { class: 'cover' }),
+        h('div', { class: 'cover-wrap' },
+          item.cover ? h('img', { class: 'cover', src: faceUrl(item.cover), alt: '', loading: 'lazy', decoding: 'async', width: 72, height: 72 }) : h('div', { class: 'cover' }),
+          !item.name ? trashBtn(faceCount > 1 ? 'Remove all of this person’s faces' : 'Remove this face', trashAll) : null),
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 } },
           h('b', {}, item.name || `${num(item.photos)} photo${item.photos === 1 ? '' : 's'}`),
           h('span', { class: 'hint' }, item.name ? `${num(item.photos)} photos` : item.years))),
-      item.samples.length ? h('div', { class: 'samples' }, item.samples.map(s => h('img', { src: faceUrl(s), alt: '', loading: 'lazy', decoding: 'async' }))) : null,
+      item.samples.length ? h('div', { class: 'samples' }, item.samples.map(s => {
+        const wrap = h('div', { class: 'sample' }, h('img', { src: faceUrl(s), alt: '', loading: 'lazy', decoding: 'async' }));
+        wrap.append(trashBtn('Remove just this face', (e) => trashOne(e, s, wrap)));
+        return wrap;
+      })) : null,
       sug ? h('div', { class: 'suggest-box' },
         h('div', {}, 'Looks like ', h('b', {}, sug.name), '?', h('span', { class: 'badge ' + (sug.match === 'strong' ? 'green' : '') , style: { marginLeft: '8px' } }, matchWord[sug.match] || '')),
         h('div', { class: 'row', style: { gap: '6px', flexWrap: 'nowrap' } },
@@ -440,7 +470,7 @@ export async function faceGroup(el, p) {
         toast(`Moved to ${name}.`); reload();
       } }, 'Move to someone else'),
       h('button', { class: 'btn small', onclick: async () => { for (const f of sel) await api(`/api/faces/${f}`, { method: 'PATCH', body: { unassign: true } }); toast('Removed from this person.'); reload(); } }, 'Remove from this person'),
-      h('button', { class: 'btn small ghost', onclick: async () => { for (const f of sel) await api(`/api/faces/${f}`, { method: 'PATCH', body: { reject: true } }); toast('Marked as not a face.'); reload(); } }, 'Not a face'),
+      h('button', { class: 'btn small ghost', onclick: async () => { for (const f of sel) await api(`/api/faces/${f}`, { method: 'PATCH', body: { reject: true } }); toast('Faces removed. The photos are untouched.'); reload(); } }, 'Remove faces'),
       h('button', { class: 'btn small ghost', onclick: () => { sel.clear(); grid.querySelectorAll('.f.sel').forEach(x => x.classList.remove('sel')); drawBar(); } }, 'Clear'));
   };
   async function reload() {

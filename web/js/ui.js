@@ -106,12 +106,13 @@ export const faceUrl = (id) => `/api/faces/${id}/crop`;
 
 // ---------------------------------------------------------------- toasts & dialogs
 
-export function toast(msg, isError = false) {
+export function toast(msg, isError = false, action = null) {
   let box = document.querySelector('.toasts');
   if (!box) { box = h('div', { class: 'toasts', role: 'status', 'aria-live': 'polite' }); document.body.append(box); }
-  const t = h('div', { class: 'toast' + (isError ? ' err' : '') }, msg);
+  const t = h('div', { class: 'toast' + (isError ? ' err' : '') }, msg,
+    action ? h('button', { class: 'toast-act', onclick: () => { t.remove(); action.run(); } }, action.label) : null);
   box.append(t);
-  setTimeout(() => t.remove(), isError ? 6000 : 3200);
+  setTimeout(() => t.remove(), action ? 7000 : isError ? 6000 : 3200);
 }
 
 export function errToast(e) { toast(e && e.message ? e.message : String(e), true); }
