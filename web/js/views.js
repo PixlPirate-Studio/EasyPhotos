@@ -1,5 +1,5 @@
 // Main pages everyone can see.
-import { h, icon, api, nameSafely, thumbUrl, faceUrl, img, personFace, toast, errToast, promptDialog, confirmDialog, MONTHS_LONG, DAYS, num, fmtDay } from './ui.js';
+import { h, icon, api, modal, nameSafely, thumbUrl, faceUrl, img, personFace, toast, errToast, promptDialog, confirmDialog, MONTHS_LONG, DAYS, num, fmtDay } from './ui.js';
 import { PhotoGrid } from './grid.js';
 import { state, loadLeaflet, TILE_URL, TILE_ATTR } from './state.js';
 import { openViewer } from './viewer.js';
@@ -74,6 +74,7 @@ export async function person(el, p) {
           toast(r.merged ? `Merged into ${name}.` : 'Renamed.'); go(`#/people/${r.id}`);
         } catch (e) { errToast(e); }
       } }, icon('edit'), 'Rename'),
+      h('button', { class: 'btn', onclick: () => chooseCover(p.id, pr.name, () => go(`#/people/${p.id}`)) }, icon('people'), 'Choose picture'),
       h('a', { class: 'btn', href: `#/admin/faces/${p.id}` }, icon('scan'), 'Review faces'),
       h('button', { class: 'btn ghost', onclick: async () => {
         try { await api(`/api/people/${p.id}`, { method: 'PATCH', body: { hidden: !pr.hidden } }); toast(pr.hidden ? 'Shown again.' : 'Hidden from People.'); go('#/people'); } catch (e) { errToast(e); }
@@ -278,4 +279,35 @@ export async function more(el) {
       h('div', { class: 'label hint', style: { marginTop: '10px' } }, 'ADMIN'),
       link('#/admin/users', 'users', 'Users'), link('#/admin/apikeys', 'key', 'API keys'), link('#/admin/settings', 'settings', 'Settings'), link('#/admin/logs', 'file', 'Logs'),
     ] : null));
+}
+
+// Lets the admin pick which face is shown as this person's picture.
+export async function chooseCover(personId, name, after) {
+  const grid = h('div', { class: 'facegrid', style: { maxHeight: '60vh', overflowY: 'auto' } });
+  const more = h('div', { style: { textAlign: 'center' } });
+  let offset = 0;
+  let m;
+  async function load() {
+    const faces = await api(`/api/people/${personId}/faces?offset=${offset}&limit=120`);
+    offset += faces.length;
+    faces.forEach(f => {
+      const tile = h('button', { class: 'f', style: { border: 0, padding: 0 }, 'aria-label': 'Use this picture', onclick: async () => {
+        try {
+          await api(`/api/people/${personId}`, { method: 'PATCH', body: { cover_face_id: f.id } });
+          toast('Picture updated.');
+          m.close();
+          after && after();
+        } catch (e) { errToast(e); }
+      } }, h('img', { src: faceUrl(f.id), alt: '', loading: 'lazy', decoding: 'async' }));
+      grid.append(tile);
+    });
+    more.innerHTML = '';
+    if (faces.length === 120) more.append(h('button', { class: 'btn small', onclick: load }, 'Show more'));
+  }
+  m = modal({
+    title: `Choose a picture for ${name || 'this person'}`, wide: true,
+    body: h('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } },
+      h('span', { class: 'hint' }, 'Tap the face you want to show on the People page. The clearest faces are first.'), grid, more),
+  });
+  load().catch(errToast);
 }
