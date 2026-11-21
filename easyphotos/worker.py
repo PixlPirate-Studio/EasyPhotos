@@ -342,7 +342,16 @@ class Worker:
         set_status("faces", "running", "Tidying up face groups…")
         activity([("faces", "info", f"Started re-grouping faces without a name ({why})")])
         t = time.time()
-        n = cluster.recluster_unnamed()
+        done = threading.Event()
+
+        def keep_alive():  # a big regroup takes minutes; show the worker is still busy, not stuck
+            while not done.wait(20):
+                set_status("worker", "running", "Tidying up face groups…")
+        threading.Thread(target=keep_alive, daemon=True).start()
+        try:
+            n = cluster.recluster_unnamed()
+        finally:
+            done.set()
         groups = db.val("SELECT COUNT(*) FROM persons WHERE name IS NULL AND unmatched=0 AND face_count>0", default=0)
         total = db.val("SELECT COUNT(*) FROM faces WHERE rejected=0", default=0)
         db.ex("INSERT INTO meta(key, value) VALUES ('faces_at_regroup', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(total),))
@@ -355,9 +364,10 @@ class Worker:
         try:
             if db.val("SELECT value FROM meta WHERE key='group_method'", default=None) == "v2":
                 return
+            # Mark it first, so a problem can never make it retry on every restart.
+            db.ex("INSERT INTO meta(key, value) VALUES ('group_method', 'v2') ON CONFLICT(key) DO UPDATE SET value='v2'")
             if db.val("SELECT COUNT(*) FROM faces", default=0):
                 self.regroup("better grouping after update")
-            db.ex("INSERT INTO meta(key, value) VALUES ('group_method', 'v2') ON CONFLICT(key) DO UPDATE SET value='v2'")
         except Exception as e:
             log.exception("Re-grouping faces failed: %s", e)
 

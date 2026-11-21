@@ -248,17 +248,15 @@ def recluster_unnamed() -> int:
         "WHERE f.rejected=0 AND length(f.embedding) > 0 AND (f.person_id IS NULL OR (p.name IS NULL AND p.unmatched=0)) "
         "ORDER BY f.id")
     named = named_cache()
-    if faces:
-        X = np.stack([from_blob(r["embedding"]) for r in faces]).astype(np.float32)
-        labels = group_faces(X, thr)
-    with db.tx() as c:
-        c.execute("UPDATE faces SET person_id=NULL WHERE person_id IN (SELECT id FROM persons WHERE name IS NULL AND unmatched=0)")
-        c.execute("DELETE FROM persons WHERE name IS NULL AND unmatched=0")
     if not faces:
+        with db.tx() as c:
+            c.execute("DELETE FROM persons WHERE name IS NULL AND unmatched=0")
         return 0
-    touched = set()
-    updates = []
-    now = time.time()
+    X = np.stack([from_blob(r["embedding"]) for r in faces]).astype(np.float32)
+    labels = group_faces(X, thr)
+    # Work out every group first, then save it all in one go: if anything
+    # fails before that, the existing groups are left exactly as they were.
+    plan = []
     for g in np.unique(labels):
         idx = np.where(labels == g)[0]
         cen = _norm(X[idx].mean(axis=0))
@@ -268,13 +266,18 @@ def recluster_unnamed() -> int:
             k = int(np.argmax(sims))
             if sims[k] >= thr:
                 pid = named["ids"][k]
-        if pid is None:
-            pid = db.ex("INSERT INTO persons(name, centroid, face_count, created_at) VALUES (NULL, ?, ?, ?)",
-                        (to_blob(cen), len(idx), now)).lastrowid
-        touched.add(pid)
-        updates += [(pid, faces[i]["id"]) for i in idx]
+        plan.append((pid, cen, [faces[i]["id"] for i in idx]))
+    touched = set()
+    now = time.time()
     with db.tx() as c:
-        c.executemany("UPDATE faces SET person_id=? WHERE id=?", updates)
+        c.execute("UPDATE faces SET person_id=NULL WHERE person_id IN (SELECT id FROM persons WHERE name IS NULL AND unmatched=0)")
+        c.execute("DELETE FROM persons WHERE name IS NULL AND unmatched=0")
+        for pid, cen, fids in plan:
+            if pid is None:
+                pid = c.execute("INSERT INTO persons(name, centroid, face_count, created_at) VALUES (NULL, ?, ?, ?)",
+                                (to_blob(cen), len(fids), now)).lastrowid
+            touched.add(pid)
+            c.executemany("UPDATE faces SET person_id=? WHERE id=?", [(pid, f) for f in fids])
     for pid in touched:
         recompute_person(pid)
     return len(faces)
