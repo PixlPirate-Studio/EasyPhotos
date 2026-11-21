@@ -103,11 +103,13 @@ def classify(name: str, path: str):
     return kind
 
 
-def find(root: str, limit: int = 20000):
+def find(root: str, limit: int = 20000, progress=None):
     out = []
     root = os.path.abspath(root)
 
     def walk(d):
+        if progress:
+            progress(d)
         try:
             with os.scandir(d) as it:
                 entries = list(it)

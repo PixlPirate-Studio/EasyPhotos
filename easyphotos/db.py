@@ -211,6 +211,17 @@ CREATE TABLE IF NOT EXISTS job_commands (
     created_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS cleanup_runs (
+    name TEXT PRIMARY KEY,
+    state TEXT NOT NULL DEFAULT 'idle',
+    started_at REAL,
+    finished_at REAL,
+    checked INTEGER NOT NULL DEFAULT 0,
+    current TEXT,
+    data TEXT,
+    error TEXT
+);
+
 CREATE TABLE IF NOT EXISTS other_recycle (
     id INTEGER PRIMARY KEY,
     library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,

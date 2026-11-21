@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from .. import config, db, emptydirs, otherfiles, recycle, settings
+from .. import cleanup, config, db, emptydirs, otherfiles, recycle, settings
 from ..security import ROLES, User, admin_user, audit
 from .common import ids_param
 
@@ -452,26 +452,42 @@ def resolve_duplicate(gid: int, body: dict, user: User = Depends(admin_user)):
 
 # ------------------------------------------------------------ recycle bin
 
+def _cleanup_out(name):
+    out = cleanup.get(name)
+    alive = db.val("SELECT updated_at FROM job_status WHERE name='worker'", default=0) or 0
+    out["worker_ok"] = time.time() - alive < 180
+    out["removed"] = db.val("SELECT COUNT(*) FROM other_recycle", default=0)
+    out["kinds"] = otherfiles.KINDS
+    return out
+
+
 @router.get("/empty-folders")
 def empty_folders(user: User = Depends(admin_user)):
-    """Looks through every library for folders with nothing in them."""
-    started = time.time()
-    out = []
-    for r in db.q("SELECT * FROM libraries ORDER BY name"):
-        p = Path(r["path"])
-        found = emptydirs.find(r["path"]) if p.is_dir() else []
-        out.append({"id": r["id"], "name": r["name"], "path": r["path"], "exists": p.is_dir(),
-                    "writable": os.access(p, os.W_OK) if p.is_dir() else False,
-                    "folders": [{"rel": f["rel"], "subfolders": f["subfolders"], "junk": f["junk"],
-                                 "junk_count": f["junk_count"]} for f in found]})
-    return {"libraries": out, "seconds": round(time.time() - started, 1)}
+    """The last (or current) background look for empty folders."""
+    return _cleanup_out("empty_folders")
+
+
+@router.post("/empty-folders/look")
+def look_empty_folders(user: User = Depends(admin_user)):
+    cleanup.queue("empty_folders")
+    db.ex("INSERT INTO job_commands(name, args, created_at) VALUES ('find_empty_folders', '{}', ?)", (time.time(),))
+    return _cleanup_out("empty_folders")
+
+
+@router.post("/cleanup/stop")
+def stop_cleanup(body: dict, user: User = Depends(admin_user)):
+    what = body.get("what")
+    if what not in cleanup.NAMES:
+        raise HTTPException(400, "Unknown check.")
+    db.ex("INSERT INTO job_commands(name, args, created_at) VALUES ('stop_cleanup', ?, ?)", (json.dumps({"what": what}), time.time()))
+    return {"ok": True}
 
 
 @router.post("/empty-folders/remove")
 def remove_empty_folders(body: dict, user: User = Depends(admin_user)):
     """body: {items: [{library_id, rel}]}. Each folder is checked again before removal."""
     libs = {r["id"]: r for r in db.q("SELECT * FROM libraries")}
-    removed, errors = 0, []
+    removed, errors, gone = 0, [], set()
     for it in (body.get("items") or [])[:5000]:
         lib = libs.get(int(it.get("library_id") or 0))
         rel = str(it.get("rel") or "")
@@ -483,31 +499,33 @@ def remove_empty_folders(body: dict, user: User = Depends(admin_user)):
         err = emptydirs.remove(lib["path"], rel)
         if err:
             errors.append(err)
+            if "is gone" in err:
+                gone.add((lib["id"], rel))
         else:
             removed += 1
+            gone.add((lib["id"], rel))
+    cleanup.forget_items("empty_folders", gone)
     audit(None, user, "removed %s empty folder(s)", removed)
     return {"ok": not errors, "removed": removed, "errors": list(dict.fromkeys(errors))[:10]}
 
 
 @router.get("/other-files")
 def other_files(user: User = Depends(admin_user)):
-    """Looks through every library for files that are not photos or videos."""
-    started = time.time()
-    out = []
-    for r in db.q("SELECT * FROM libraries ORDER BY name"):
-        p = Path(r["path"])
-        files = otherfiles.find(r["path"]) if p.is_dir() else []
-        out.append({"id": r["id"], "name": r["name"], "exists": p.is_dir(),
-                    "writable": os.access(p, os.W_OK) if p.is_dir() else False, "files": files,
-                    "capped": len(files) >= 20000})
-    removed = db.val("SELECT COUNT(*) FROM other_recycle", default=0)
-    return {"libraries": out, "kinds": otherfiles.KINDS, "removed": removed, "seconds": round(time.time() - started, 1)}
+    """The last (or current) background look for non-photo files."""
+    return _cleanup_out("other_files")
+
+
+@router.post("/other-files/look")
+def look_other_files(user: User = Depends(admin_user)):
+    cleanup.queue("other_files")
+    db.ex("INSERT INTO job_commands(name, args, created_at) VALUES ('find_other_files', '{}', ?)", (time.time(),))
+    return _cleanup_out("other_files")
 
 
 @router.post("/other-files/remove")
 def remove_other_files(body: dict, user: User = Depends(admin_user)):
     libs = {r["id"]: r for r in db.q("SELECT * FROM libraries")}
-    moved, errors = 0, []
+    moved, errors, gone = 0, [], set()
     for it in (body.get("items") or [])[:20000]:
         lib = libs.get(int(it.get("library_id") or 0))
         rel = str(it.get("rel") or "")
@@ -516,8 +534,12 @@ def remove_other_files(body: dict, user: User = Depends(admin_user)):
         err = otherfiles.remove(lib, rel)
         if err:
             errors.append(err)
+            if "is gone" in err:
+                gone.add((lib["id"], rel))
         else:
             moved += 1
+            gone.add((lib["id"], rel))
+    cleanup.forget_items("other_files", gone)
     audit(None, user, "moved %s non-photo file(s) to the Recycle Bin", moved)
     return {"ok": not errors, "moved": moved, "errors": list(dict.fromkeys(errors))[:10]}
 

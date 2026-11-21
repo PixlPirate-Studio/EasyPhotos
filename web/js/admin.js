@@ -135,7 +135,7 @@ export async function library(el) {
         const t = new Date(r.ts * 1000);
         list.append(h('div', { class: 'act-row ' + r.level },
           h('span', { class: 'mono muted' }, t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })),
-          h('span', { class: 'act-kind' }, { scan: 'Scan', thumbs: 'Thumbnail', faces: 'Faces', duplicates: 'Duplicates', command: 'You' }[r.kind] || r.kind),
+          h('span', { class: 'act-kind' }, { cleanup: 'Clean-up', scan: 'Scan', thumbs: 'Thumbnail', faces: 'Faces', duplicates: 'Duplicates', command: 'You' }[r.kind] || r.kind),
           h('span', { class: 'act-text' }, r.text)));
       }
     } catch (e) { /* ignore */ }
@@ -547,15 +547,59 @@ export async function duplicates(el, p, q) {
   load();
 }
 
+// Runs a "Look for…" check in the background worker and keeps the page up to
+// date. The result is saved on the server, so the page can be closed.
+function bgCheck({ what, url, status, findBtn, idleLabel, onResult }) {
+  let timer = null, dead = false, lastKey = null;
+  async function refresh(force = false) {
+    clearTimeout(timer);
+    let r;
+    try { r = await api(url); } catch (e) { if (!dead) timer = setTimeout(refresh, 5000); return; }
+    if (!dead) draw(r, force);
+  }
+  function draw(r, force = false) {
+    const busy = r.state === 'running' || r.state === 'queued';
+    status.innerHTML = '';
+    findBtn.disabled = busy;
+    findBtn.textContent = busy ? 'Looking…' : (r.state === 'never' ? idleLabel : 'Look again');
+    if (busy) {
+      status.append(h('div', { class: 'card', style: { gap: '8px', marginTop: '14px' } },
+        h('div', { class: 'row' },
+          h('b', { class: 'grow' }, r.state === 'queued' ? 'Starting…' : `Looking… ${num(r.checked || 0)} folders checked`),
+          h('button', { class: 'btn small ghost', onclick: async () => { try { await post('/api/admin/cleanup/stop', { what }); toast('Stopping…'); } catch (e) { errToast(e); } } }, 'Stop')),
+        r.current ? h('div', { class: 'mono muted', style: { wordBreak: 'break-all', fontSize: '13px' } }, r.current) : null,
+        r.worker_ok === false ? h('div', { class: 'hint', style: { color: 'var(--orange)' } }, 'The background worker isn’t answering right now. It will start once the worker is back.') : null,
+        h('div', { class: 'hint' }, 'You can leave this page. It keeps going in the background, and the results will be here when you come back.')));
+      timer = setTimeout(refresh, 1500);
+    } else if (r.state === 'done') {
+      const took = Math.max(1, Math.round((r.finished_at || 0) - (r.started_at || 0)));
+      status.append(h('div', { class: 'hint', style: { marginTop: '14px' } }, `Last checked ${fmtAgo(r.finished_at)} · looked through ${num(r.checked || 0)} folders in ${took < 90 ? `${took} s` : `${Math.round(took / 60)} min`}.`));
+    } else if (r.state === 'stopped' || r.state === 'error') {
+      status.append(h('div', { class: 'hint', style: { marginTop: '14px', color: 'var(--orange)' } },
+        `${r.error || 'The last look didn’t finish.'}${r.libraries.length ? ' Showing the results from the last look that did finish.' : ''}`));
+    }
+    const key = `${r.state}:${r.finished_at}`;
+    if (force || key !== lastKey) { lastKey = key; onResult(r, busy); }
+  }
+  return {
+    refresh,
+    async start() {
+      try { const r = await post(url + '/look'); draw(r, true); } catch (e) { errToast(e); }
+    },
+    destroy() { dead = true; clearTimeout(timer); },
+  };
+}
+
 // ---------------------------------------------------------------- Empty folders
 export async function emptyFolders(el) {
   const body = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '18px', marginTop: '14px' } });
   const selBar = h('div', { class: 'card hidden dupbar' });
   const selected = new Map(); // key -> {library_id, rel, cb}
-  const findBtn = h('button', { class: 'btn primary', onclick: () => look() }, 'Look for empty folders');
+  const findBtn = h('button', { class: 'btn primary', onclick: () => checker.start() }, 'Look for empty folders');
+  const status = h('div');
   el.append(head('Library › Empty folders', 'Finds folders with nothing in them so you can tidy up. Nothing is removed until you pick folders and confirm.', [findBtn]),
-    body, selBar);
-  body.append(h('div', { class: 'empty' }, icon('folder'), 'Press “Look for empty folders” to check all your libraries.'));
+    status, body, selBar);
+  const checker = bgCheck({ what: 'empty_folders', url: '/api/admin/empty-folders', status, findBtn, idleLabel: 'Look for empty folders', onResult: render });
 
   function drawSel() {
     selBar.innerHTML = '';
@@ -576,42 +620,49 @@ export async function emptyFolders(el) {
       const r = await post('/api/admin/empty-folders/remove', { items: [...selected.values()].map(x => ({ library_id: x.library_id, rel: x.rel })) });
       if (r.errors.length) toast(r.errors[0], true);
       toast(`Removed ${num(r.removed)} empty folder${r.removed === 1 ? '' : 's'}.`);
-      look();
+      selected.clear(); drawSel(); checker.refresh(true);
     } catch (e) { errToast(e); }
   }
 
-  async function look() {
+  function render(r, busy) {
     selected.clear(); drawSel();
-    findBtn.disabled = true; findBtn.textContent = 'Looking…';
     body.innerHTML = '';
-    body.append(h('div', { class: 'empty' }, icon('folder'), 'Looking through every folder… this can take a little while on big libraries.'));
-    let r;
-    try { r = await api('/api/admin/empty-folders'); } catch (e) { errToast(e); body.innerHTML = ''; return; }
-    finally { findBtn.disabled = false; findBtn.textContent = 'Look again'; }
-    body.innerHTML = '';
-    const total = r.libraries.reduce((s, l) => s + l.folders.length, 0);
-    body.append(h('div', { class: 'hint' }, total ? `Found ${num(total)} empty folder${total > 1 ? 's' : ''} in ${r.seconds} s.` : `No empty folders found (checked in ${r.seconds} s).`));
+    if (busy) { body.append(h('div', { class: 'empty' }, icon('folder'), 'Looking through every folder… the list shows up here when it’s done.')); return; }
+    if (r.state === 'never' || (!r.libraries.length && r.state !== 'done')) { body.append(h('div', { class: 'empty' }, icon('folder'), 'Press “Look for empty folders” to check all your libraries.')); return; }
+    const total = r.libraries.reduce((s, l) => s + (l.folders || []).length, 0);
+    body.append(h('div', { class: 'hint' }, total ? `${num(total)} empty folder${total > 1 ? 's' : ''} found.` : 'No empty folders found.'));
     r.libraries.forEach(lib => {
-      if (!lib.folders.length) return;
+      if (!(lib.folders || []).length) return;
       const rows = h('div', { style: { display: 'flex', flexDirection: 'column' } });
       const cbs = [];
-      lib.folders.forEach(f => {
+      let shown = 0;
+      const moreBtn = h('button', { class: 'btn small', style: { marginTop: '10px', alignSelf: 'center' }, onclick: () => drawMore() });
+      const drawMore = () => { lib.folders.slice(shown, shown + 300).forEach(f => {
         const key = `${lib.id}:${f.rel}`;
-        const cb = h('input', { type: 'checkbox', disabled: !lib.writable, style: { width: '20px', height: '20px', accentColor: 'var(--accent)', flex: 'none' },
+        const cb = h('input', { type: 'checkbox', disabled: !lib.writable, checked: selected.has(key), style: { width: '20px', height: '20px', accentColor: 'var(--accent)', flex: 'none' },
           onchange: () => { cb.checked ? selected.set(key, { library_id: lib.id, rel: f.rel, cb }) : selected.delete(key); drawSel(); } });
+        if (selected.has(key)) selected.get(key).cb = cb;
         cbs.push([key, f, cb]);
         const notes = [f.subfolders ? `has ${num(f.subfolders)} empty folder${f.subfolders > 1 ? 's' : ''} inside` : null,
           f.junk_count ? `only system files: ${f.junk.join(', ')}${f.junk_count > f.junk.length ? '…' : ''}` : null].filter(Boolean).join(' · ');
         rows.append(h('label', { class: 'check', style: { alignItems: 'flex-start', padding: '10px 0', borderTop: '1px solid var(--line)', minHeight: 0 } }, cb,
           h('div', { style: { minWidth: 0 } }, h('div', { class: 'mono', style: { wordBreak: 'break-all' } }, f.rel), notes ? h('div', { class: 'hint' }, notes) : null)));
       });
+        shown = Math.min(lib.folders.length, shown + 300);
+        moreBtn.classList.toggle('hidden', shown >= lib.folders.length);
+        moreBtn.textContent = `Show more (${num(lib.folders.length - shown)} left)`;
+      };
+      drawMore();
       body.append(h('section', { class: 'card' },
         h('div', { class: 'row' }, h('b', { class: 'grow' }, `${lib.name} · ${num(lib.folders.length)}`),
-          lib.writable ? h('button', { class: 'btn small', onclick: () => { cbs.forEach(([key, f, cb]) => { cb.checked = true; selected.set(key, { library_id: lib.id, rel: f.rel, cb }); }); drawSel(); } }, 'Select all') : null),
+          lib.writable ? h('button', { class: 'btn small', onclick: () => { lib.folders.forEach(f => { const key = `${lib.id}:${f.rel}`; if (!selected.has(key)) selected.set(key, { library_id: lib.id, rel: f.rel, cb: { checked: true } }); }); cbs.forEach(([key, f, cb]) => { cb.checked = true; selected.set(key, { library_id: lib.id, rel: f.rel, cb }); }); drawSel(); } }, 'Select all') : null),
+        lib.capped ? h('div', { class: 'hint' }, 'Showing the first 20,000. Remove these and look again to see the rest.') : null,
         !lib.writable ? h('div', { class: 'hint', style: { color: 'var(--orange, #F5A35C)' } }, 'This library is read-only, so folders can’t be removed. Change its folder mapping in Unraid to Read/Write if you want to.') : null,
-        rows));
+        rows, moreBtn));
     });
   }
+  checker.refresh(true);
+  return () => checker.destroy();
 }
 
 // ---------------------------------------------------------------- Non-photo files
@@ -622,15 +673,20 @@ export async function otherFiles(el, p, q) {
   const tabs = h('div', { class: 'tabs' });
   const body = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '18px', marginTop: '14px' } });
   const selBar = h('div', { class: 'card hidden dupbar' });
-  const findBtn = h('button', { class: 'btn primary', onclick: () => look() }, 'Look for non-photo files');
+  const findBtn = h('button', { class: 'btn primary', onclick: () => checker.start() }, 'Look for non-photo files');
+  const status = h('div');
   el.append(head('Library › Non-photo files', 'Finds files that aren’t photos or videos, like .DS_Store, temp files and text files. Photo and video files of any kind are never listed.', [findBtn]),
-    tabs, body, selBar);
+    tabs, status, body, selBar);
+  let busyNow = false;
+  const checker = bgCheck({ what: 'other_files', url: '/api/admin/other-files', status, findBtn, idleLabel: 'Look for non-photo files',
+    onResult: (r, busy) => { found = r; busyNow = busy; selected.clear(); drawSel(); drawTabs(r.removed); if (tab === 'found') drawFound(); } });
 
   function drawTabs(removedCount) {
     tabs.innerHTML = '';
     [['found', 'Found'], ['removed', `Removed${removedCount != null ? ` · ${num(removedCount)}` : ''}`]].forEach(([k, label]) =>
       tabs.append(h('button', { class: tab === k ? 'on' : '', onclick: () => { tab = k; selected.clear(); drawSel(); k === 'found' ? drawFound() : drawRemoved(); drawTabs(removedCount); } }, label)));
     findBtn.classList.toggle('hidden', tab !== 'found');
+    status.classList.toggle('hidden', tab !== 'found');
   }
 
   function drawSel() {
@@ -664,29 +720,20 @@ export async function otherFiles(el, p, q) {
       const r = await post('/api/admin/other-files/remove', { items: [...selected.values()].map(x => ({ library_id: x.library_id, rel: x.rel })) });
       if (r.errors.length) toast(r.errors[0], true);
       toast(`Moved ${num(r.moved)} file${r.moved === 1 ? '' : 's'} to the Recycle Bin.`);
-      look();
+      checker.refresh(true);
     } catch (e) { errToast(e); }
-  }
-
-  async function look() {
-    selected.clear(); drawSel();
-    findBtn.disabled = true; findBtn.textContent = 'Looking…';
-    body.innerHTML = '';
-    body.append(h('div', { class: 'empty' }, icon('doc'), 'Looking through every folder… this can take a little while on big libraries.'));
-    try { found = await api('/api/admin/other-files'); } catch (e) { errToast(e); body.innerHTML = ''; return; }
-    finally { findBtn.disabled = false; findBtn.textContent = 'Look again'; }
-    drawTabs(found.removed);
-    drawFound();
   }
 
   function drawFound() {
     body.innerHTML = '';
-    if (!found) { body.append(h('div', { class: 'empty' }, icon('doc'), 'Press “Look for non-photo files” to check all your libraries.')); return; }
+    if (!found) return;
+    if (busyNow) { body.append(h('div', { class: 'empty' }, icon('doc'), 'Looking through every folder… the list shows up here when it’s done.')); return; }
+    if (found.state === 'never' || (!found.libraries.length && found.state !== 'done')) { body.append(h('div', { class: 'empty' }, icon('doc'), 'Press “Look for non-photo files” to check all your libraries.')); return; }
     const all = [];
-    found.libraries.forEach(lib => lib.files.forEach(f => all.push({ ...f, lib })));
+    found.libraries.forEach(lib => (lib.files || []).forEach(f => all.push({ ...f, lib })));
     const total = all.length, bytes = all.reduce((s, f) => s + f.size, 0);
-    body.append(h('div', { class: 'hint' }, total ? `Found ${num(total)} non-photo file${total > 1 ? 's' : ''} (${fmtBytes(bytes)}) in ${found.seconds} s.` : `Nothing found. Your libraries only have photos and videos (checked in ${found.seconds} s).`));
-    found.libraries.filter(l => !l.writable && l.files.length).forEach(l => body.append(h('div', { class: 'hint', style: { color: 'var(--orange)' } }, `${l.name} is read-only, so its files can be seen but not removed. Change its folder mapping in Unraid to Read/Write if you want to.`)));
+    body.append(h('div', { class: 'hint' }, total ? `${num(total)} non-photo file${total > 1 ? 's' : ''} found (${fmtBytes(bytes)}).` : 'Nothing found. Your libraries only have photos and videos.'));
+    found.libraries.filter(l => !l.writable && (l.files || []).length).forEach(l => body.append(h('div', { class: 'hint', style: { color: 'var(--orange)' } }, `${l.name} is read-only, so its files can be seen but not removed. Change its folder mapping in Unraid to Read/Write if you want to.`)));
     found.libraries.filter(l => l.capped).forEach(l => body.append(h('div', { class: 'hint' }, `${l.name}: showing the first 20,000. Remove some and look again to see the rest.`)));
     Object.keys(found.kinds).forEach(kind => {
       const files = all.filter(f => f.kind === kind);
@@ -749,7 +796,9 @@ export async function otherFiles(el, p, q) {
   }
 
   drawTabs(null);
-  if (tab === 'found') drawFound(); else drawRemoved();
+  checker.refresh(true);
+  if (tab === 'removed') drawRemoved();
+  return () => checker.destroy();
 }
 
 // ---------------------------------------------------------------- Hidden & Recycle Bin

@@ -24,9 +24,12 @@ def _is_junk(entry: os.DirEntry) -> bool:
         return False
 
 
-def _check(path: str):
+def _check(path: str, progress=None):
     """Returns (is_empty, empty_subfolder_count, junk_files, found) for one folder.
-    found is the list of the top-most empty folders below it when it is not empty."""
+    found is the list of the top-most empty folders below it when it is not empty.
+    progress (optional) is called with each folder and may raise to stop."""
+    if progress:
+        progress(path)
     junk, subs_empty, all_empty, found = [], 0, True, []
     try:
         with os.scandir(path) as it:
@@ -41,7 +44,7 @@ def _check(path: str):
                 if e.name in config.SKIP_DIRS or e.name.startswith("."):
                     all_empty = False  # leave special and hidden folders alone
                     continue
-                empty, n, j, below = _check(e.path)
+                empty, n, j, below = _check(e.path, progress)
                 if empty:
                     subs_empty += 1 + n
                     junk += j
@@ -59,11 +62,11 @@ def _check(path: str):
     return all_empty, subs_empty, junk, found
 
 
-def find(root: str, limit: int = 5000):
+def find(root: str, limit: int = 5000, progress=None):
     """Top-most empty folders inside root (never root itself)."""
     if not os.path.isdir(root):
         return []
-    _, _, _, found = _check(root)
+    _, _, _, found = _check(root, progress)
     out = []
     for f in found[:limit]:
         f["rel"] = os.path.relpath(f["path"], root)

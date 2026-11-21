@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PIL import Image
 
-from . import cluster, config, db, dupes, media, recycle, scanner, settings, xmp
+from . import cleanup, cluster, config, db, dupes, media, recycle, scanner, settings, xmp
 
 log = logging.getLogger("easyphotos.worker")
 
@@ -30,7 +30,7 @@ def set_status(name: str, state: str, message: str = "", rate=None) -> None:
 
 _act_count = 0
 _log_files = True
-KIND_LABEL = {"scan": "SCAN", "thumbs": "THUMB", "faces": "FACES", "duplicates": "DUPES", "command": "ADMIN"}
+KIND_LABEL = {"cleanup": "CLEAN", "scan": "SCAN", "thumbs": "THUMB", "faces": "FACES", "duplicates": "DUPES", "command": "ADMIN"}
 
 
 def activity(entries) -> None:
@@ -76,6 +76,8 @@ class Worker:
         self.meta_times = []
         self.scan_thread = None
         self.scan_stop = threading.Event()
+        self.cleanup_threads = {}
+        self.cleanup_stops = {}
         self.last_beat = 0.0
         self.threads = 1
         self.last_summary = 0.0
@@ -99,7 +101,9 @@ class Worker:
             log.debug("Command: %s %s", name, args)
             friendly = {"scan": "Scan for new photos requested", "find_faces": "Find faces started", "rescan_faces": "Re-scan of all faces started",
                         "recluster": "Re-grouping faces", "rebuild_thumbs": "Rebuilding all thumbnails", "duplicates": "Duplicate check requested",
-                        "refresh_places": "Updating place names", "forget_names": "Removing all names and starting over"}.get(name, name)
+                        "refresh_places": "Updating place names", "forget_names": "Removing all names and starting over",
+                        "find_empty_folders": "Look for empty folders requested", "find_other_files": "Look for non-photo files requested",
+                        "stop_cleanup": "Stop looking requested"}.get(name, name)
             activity([("command", "info", friendly)])
             if name == "stop_scan":
                 self.scan_stop.set()
@@ -141,7 +145,23 @@ class Worker:
                 self.last_dupes = 0
             elif name == "refresh_places":
                 scanner.refresh_places()
+            elif name in ("find_empty_folders", "find_other_files"):
+                self.start_cleanup(name[5:])
+            elif name == "stop_cleanup":
+                for key in ([args.get("what")] if args.get("what") else list(self.cleanup_stops)):
+                    if key in self.cleanup_stops:
+                        self.cleanup_stops[key].set()
         return True
+
+    def start_cleanup(self, what: str) -> None:
+        t = self.cleanup_threads.get(what)
+        if t is not None and t.is_alive():
+            return  # already looking
+        stop = threading.Event()
+        self.cleanup_stops[what] = stop
+        t = threading.Thread(target=cleanup.run, args=(what, stop, activity), daemon=True, name=f"cleanup-{what}")
+        self.cleanup_threads[what] = t
+        t.start()
 
     # ------------------------------------------------------------ scanning
     def maybe_scan(self, s) -> bool:
@@ -426,6 +446,7 @@ class Worker:
     # ------------------------------------------------------------ loop
     def run(self):
         set_status("worker", "running", "Started")
+        cleanup.mark_interrupted()
         try:
             n = scanner.pair_live_photos()
             if n:
