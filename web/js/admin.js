@@ -344,12 +344,12 @@ export async function faces(el, p, q) {
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
     c.append(
       h('div', { class: 'top', onclick: () => go(`#/admin/faces/${item.id}`) },
-        item.cover ? h('img', { class: 'cover', src: faceUrl(item.cover), alt: '' }) : h('div', { class: 'cover' }),
+        item.cover ? h('img', { class: 'cover', src: faceUrl(item.cover), alt: '', loading: 'lazy', decoding: 'async', width: 72, height: 72 }) : h('div', { class: 'cover' }),
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 } },
           h('b', {}, item.name || `${num(item.photos)} photo${item.photos === 1 ? '' : 's'}`),
           h('span', { class: 'hint' }, item.name ? `${num(item.photos)} photos` : item.years),
           item.suggest && !item.name ? h('span', { class: 'suggest-line' }, `Looks like ${item.suggest.name}?`) : null)),
-      item.samples.length ? h('div', { class: 'samples' }, item.samples.map(s => h('img', { src: faceUrl(s), alt: '', loading: 'lazy' }))) : null,
+      item.samples.length ? h('div', { class: 'samples' }, item.samples.map(s => h('img', { src: faceUrl(s), alt: '', loading: 'lazy', decoding: 'async' }))) : null,
       input,
       h('div', { class: 'row', style: { gap: '6px', flexWrap: 'nowrap' } },
         h('button', { class: 'btn small primary grow', onclick: save }, item.name ? 'Rename' : 'Save name'),

@@ -56,6 +56,7 @@ async def lifespan(app: FastAPI):
         log.info("START Library %s -> %s%s", lib["name"], lib["path"], "" if lib["enabled"] else " (turned off)")
     if not libs:
         log.info("START No libraries yet. Add one in the web page: Library > Add library")
+    threading.Thread(target=db.prewarm, args=(8,), daemon=True).start()
     if os.environ.get("EP_NO_WORKER") != "1":
         _start_worker()
         threading.Thread(target=_supervise, daemon=True).start()

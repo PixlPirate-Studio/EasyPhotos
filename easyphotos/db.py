@@ -233,12 +233,48 @@ def _connect():
     return conn
 
 
+# Opening the encrypted database is slow on purpose (~150 ms of key stretching),
+# so connections are kept in a pool and handed from finished threads to new ones
+# instead of being opened again for every burst of requests.
+_pool_lock = threading.Lock()
+_free = []      # connections nobody is using
+_owners = {}    # thread ident -> (thread, connection)
+
+
+def _take_connection():
+    with _pool_lock:
+        c = None
+        for ident, (th, cc) in list(_owners.items()):
+            if not th.is_alive():           # that thread is finished: reuse its connection
+                del _owners[ident]
+                _free.append(cc)
+        if _free:
+            c = _free.pop()
+    if c is None:
+        c = _connect()
+    try:
+        if c.in_transaction:
+            c.rollback()
+    except Exception:
+        pass
+    with _pool_lock:
+        _owners[threading.get_ident()] = (threading.current_thread(), c)
+    return c
+
+
 def conn():
     c = getattr(_local, "conn", None)
     if c is None:
-        c = _connect()
+        c = _take_connection()
         _local.conn = c
     return c
+
+
+def prewarm(n: int = 6) -> None:
+    """Opens a few connections ahead of time so the first page loads are fast."""
+    made = [_connect() for _ in range(n)]
+    with _pool_lock:
+        _free.extend(made)
 
 
 MIGRATIONS = [
