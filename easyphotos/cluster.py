@@ -79,19 +79,204 @@ class Clusterer:
         self.touched.clear()
 
 
+def _neighbours(X: np.ndarray, thr: float, k: int = 15, chunk: int = 512):
+    """For every face, its closest faces that are similar enough (edge list)."""
+    n = len(X)
+    k = min(k, n - 1)
+    rows, cols, ws = [], [], []
+    if k <= 0:
+        return np.zeros(0, int), np.zeros(0, int), np.zeros(0, np.float32)
+    for start in range(0, n, chunk):
+        sims = X[start:start + chunk] @ X.T
+        b = len(sims)
+        sims[np.arange(b), np.arange(start, start + b)] = -1.0
+        idx = np.argpartition(-sims, k - 1, axis=1)[:, :k]
+        w = np.take_along_axis(sims, idx, axis=1)
+        keep = w >= thr
+        r = np.repeat(np.arange(start, start + b), k).reshape(b, k)
+        rows.append(r[keep]); cols.append(idx[keep]); ws.append(w[keep])
+    return np.concatenate(rows), np.concatenate(cols), np.concatenate(ws).astype(np.float32)
+
+
+def group_faces(X: np.ndarray, thr: float, iterations: int = 25, seed: int = 7) -> np.ndarray:
+    """Groups all faces at once (graph clustering, "Chinese whispers").
+
+    Each face links to its closest look-alikes above the threshold. Then each
+    face repeatedly takes the group that most of its strongest links belong
+    to. Unlike a running average, this doesn't drift, so two similar-looking
+    people don't slowly melt into one group. Finally, faces that don't fit
+    their group's average well are split off on their own.
+    Returns a group number for every face."""
+    n = len(X)
+    if n == 0:
+        return np.zeros(0, int)
+    X = np.ascontiguousarray(X, dtype=np.float32)
+    r, c, w = _neighbours(X, thr)
+    # make links two-way, keeping each pair once
+    a = np.concatenate([r, c]); b = np.concatenate([c, r]); ww = np.concatenate([w, w])
+    order = np.lexsort((b, a))
+    a, b, ww = a[order], b[order], ww[order]
+    if len(a):
+        first = np.ones(len(a), bool)
+        first[1:] = (a[1:] != a[:-1]) | (b[1:] != b[:-1])
+        a, b, ww = a[first], b[first], ww[first]
+    starts = np.searchsorted(a, np.arange(n + 1))
+    nbr = [b[starts[i]:starts[i + 1]].tolist() for i in range(n)]
+    wts = [(ww[starts[i]:starts[i + 1]] ** 2).tolist() for i in range(n)]  # favour strong links
+    labels = list(range(n))
+    rng = np.random.default_rng(seed)
+    for _ in range(iterations):
+        changed = 0
+        for i in rng.permutation(n).tolist():
+            nb = nbr[i]
+            if not nb:
+                continue
+            votes = {}
+            for j, wt in zip(nb, wts[i]):
+                lj = labels[j]
+                votes[lj] = votes.get(lj, 0.0) + wt
+            best = max(votes, key=votes.get)
+            if best != labels[i]:
+                labels[i] = best
+                changed += 1
+        if changed == 0:
+            break
+    labels = np.array(labels)
+    # split off faces that don't match their group's average
+    out = labels.copy()
+    nxt = n
+    for g in np.unique(labels):
+        m = np.where(labels == g)[0]
+        if len(m) < 2:
+            continue
+        cen = _norm(X[m].mean(axis=0))
+        bad = m[(X[m] @ cen) < thr - 0.05]
+        for i in bad:
+            out[i] = nxt
+            nxt += 1
+    _, out = np.unique(out, return_inverse=True)
+    # merging is done by average: a little looser than the face-to-face link
+    return _merge_groups(X, out, thr - 0.08)
+
+
+def _merge_groups(X: np.ndarray, labels: np.ndarray, thr: float, max_groups: int = 6000) -> np.ndarray:
+    """Joins groups that are the same person on average ("average linkage"):
+    two groups merge only if their faces match each other well on average,
+    not just through one look-alike pair. Single faces then join a group the
+    same way."""
+    labels = labels.copy()
+    ids, inv, sizes = np.unique(labels, return_inverse=True, return_counts=True)
+    sums = np.zeros((len(ids), X.shape[1]), np.float64)
+    np.add.at(sums, inv, X)
+    multi = np.where(sizes >= 2)[0]
+    if len(multi) > max_groups:  # keep memory in check on huge libraries: biggest groups first
+        multi = multi[np.argsort(-sizes[multi])[:max_groups]]
+    if len(multi) >= 2:
+        M = (sums[multi] / sizes[multi, None]).astype(np.float32)
+        n = sizes[multi].astype(np.float64)
+        S = M @ M.T
+        np.fill_diagonal(S, -1)
+        alive = np.ones(len(multi), bool)
+        parent = np.arange(len(multi))
+        best_j = np.argmax(S, axis=1)
+        best_s = S[np.arange(len(S)), best_j]
+        while True:
+            i = int(np.argmax(best_s))
+            j = int(best_j[i])
+            if best_s[i] < thr:
+                break
+            # merge j into i
+            M[i] = (M[i] * n[i] + M[j] * n[j]) / (n[i] + n[j])
+            n[i] += n[j]
+            alive[j] = False
+            parent[j] = i
+            S[j, :] = -1
+            S[:, j] = -1
+            best_s[j] = -1
+            row = M @ M[i]
+            row[~alive] = -1
+            row[i] = -1
+            S[i, :] = row
+            S[:, i] = row
+            best_j[i] = int(np.argmax(row))
+            best_s[i] = row[best_j[i]]
+            # rows that pointed at i or j need a fresh look; others may now prefer i
+            stale = np.where(alive & ((best_j == i) | (best_j == j)))[0]
+            for r in stale:
+                if r == i:
+                    continue
+                best_j[r] = int(np.argmax(S[r]))
+                best_s[r] = S[r, best_j[r]]
+            better = alive & (row > best_s)
+            best_j[better] = i
+            best_s[better] = row[better]
+        def root(k):
+            while parent[k] != k:
+                k = parent[k]
+            return k
+        new_of = {int(ids[multi[k]]): int(ids[multi[root(k)]]) for k in range(len(multi))}
+        labels = np.array([new_of.get(int(l), int(l)) for l in labels])
+        # recompute group sums after merging
+        ids, inv, sizes = np.unique(labels, return_inverse=True, return_counts=True)
+        sums = np.zeros((len(ids), X.shape[1]), np.float64)
+        np.add.at(sums, inv, X)
+    # single faces: join the group they match best on average, if good enough
+    big = np.where(sizes >= 2)[0]
+    singles = np.where(sizes == 1)[0]
+    if len(big) and len(singles):
+        M = (sums[big] / sizes[big, None]).astype(np.float32)
+        face_of = {int(g): int(np.where(inv == g)[0][0]) for g in singles}
+        for start in range(0, len(singles), 2048):
+            grp = singles[start:start + 2048]
+            fx = X[[face_of[int(g)] for g in grp]]
+            sims = fx @ M.T
+            best = np.argmax(sims, axis=1)
+            for g, b, sv in zip(grp, best, sims[np.arange(len(grp)), best]):
+                if sv >= thr:
+                    labels[face_of[int(g)]] = ids[big[b]]
+    _, labels = np.unique(labels, return_inverse=True)
+    return labels
+
+
 def recluster_unnamed() -> int:
-    """Re-groups every face that is not attached to a named person.
-    Used after changing the strictness setting."""
+    """Re-groups every face that is not attached to a named person, all at
+    once (see group_faces). Named people and their faces are never changed;
+    a new group whose faces clearly match a named person joins that person."""
+    thr = settings.similarity_threshold()
     faces = db.q(
         "SELECT f.id, f.embedding FROM faces f LEFT JOIN persons p ON p.id=f.person_id "
-        "WHERE f.rejected=0 AND length(f.embedding) > 0 AND (f.person_id IS NULL OR (p.name IS NULL AND p.unmatched=0))")
+        "WHERE f.rejected=0 AND length(f.embedding) > 0 AND (f.person_id IS NULL OR (p.name IS NULL AND p.unmatched=0)) "
+        "ORDER BY f.id")
+    named = named_cache()
+    if faces:
+        X = np.stack([from_blob(r["embedding"]) for r in faces]).astype(np.float32)
+        labels = group_faces(X, thr)
     with db.tx() as c:
         c.execute("UPDATE faces SET person_id=NULL WHERE person_id IN (SELECT id FROM persons WHERE name IS NULL AND unmatched=0)")
         c.execute("DELETE FROM persons WHERE name IS NULL AND unmatched=0")
-    cl = Clusterer()
-    for r in faces:
-        cl.assign(r["id"], from_blob(r["embedding"]))
-    cl.finish()
+    if not faces:
+        return 0
+    touched = set()
+    updates = []
+    now = time.time()
+    for g in np.unique(labels):
+        idx = np.where(labels == g)[0]
+        cen = _norm(X[idx].mean(axis=0))
+        pid = None
+        if named["ids"]:
+            sims = named["mat"] @ cen
+            k = int(np.argmax(sims))
+            if sims[k] >= thr:
+                pid = named["ids"][k]
+        if pid is None:
+            pid = db.ex("INSERT INTO persons(name, centroid, face_count, created_at) VALUES (NULL, ?, ?, ?)",
+                        (to_blob(cen), len(idx), now)).lastrowid
+        touched.add(pid)
+        updates += [(pid, faces[i]["id"]) for i in idx]
+    with db.tx() as c:
+        c.executemany("UPDATE faces SET person_id=? WHERE id=?", updates)
+    for pid in touched:
+        recompute_person(pid)
     return len(faces)
 
 

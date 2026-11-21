@@ -130,14 +130,13 @@ class Worker:
                 with db.tx() as c:
                     c.execute("UPDATE persons SET name=NULL, unmatched=0, hidden=0")
                     c.execute("UPDATE faces SET confirmed=0")
-                n = cluster.recluster_unnamed()
+                self.regroup("all names removed")
+                n = db.val("SELECT COUNT(*) FROM faces WHERE rejected=0", default=0)
                 xmp.mark_dirty(ids)
                 activity([("faces", "info", f"All names removed. {n:,} faces re-grouped into unnamed groups.")])
                 set_status("faces", "idle", f"Names removed; {n:,} faces re-grouped")
             elif name == "recluster":
-                set_status("faces", "running", "Re-grouping faces…")
-                n = cluster.recluster_unnamed()
-                set_status("faces", "idle", f"Re-grouped {n} faces")
+                self.regroup("asked for by admin")
             elif name == "rebuild_thumbs":
                 db.ex("UPDATE assets SET meta_status=0, thumb_ver=thumb_ver+1 WHERE deleted_at IS NULL")
             elif name == "duplicates":
@@ -283,6 +282,7 @@ class Worker:
         if not rows:
             pending_meta = db.val("SELECT COUNT(*) FROM assets WHERE meta_status=0 AND deleted_at IS NULL", default=0)
             if not pending_meta:
+                self.maybe_regroup()
                 set_status("faces", "idle", "Done")
             return False
         try:
@@ -336,6 +336,42 @@ class Worker:
         rate = n / secs * 60  # photos per minute
         set_status("faces", "running", f"Finding faces… last: {rel_label(paths.get(rows[-1]['id']))}", rate=rate)
         return True
+
+    def regroup(self, why: str) -> None:
+        self.heartbeat(force=True)
+        set_status("faces", "running", "Tidying up face groups…")
+        activity([("faces", "info", f"Started re-grouping faces without a name ({why})")])
+        t = time.time()
+        n = cluster.recluster_unnamed()
+        groups = db.val("SELECT COUNT(*) FROM persons WHERE name IS NULL AND unmatched=0 AND face_count>0", default=0)
+        total = db.val("SELECT COUNT(*) FROM faces WHERE rejected=0", default=0)
+        db.ex("INSERT INTO meta(key, value) VALUES ('faces_at_regroup', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(total),))
+        activity([("faces", "info", f"Finished re-grouping {n:,} faces into {groups:,} groups in {time.time() - t:.0f} s")])
+        set_status("faces", "idle", f"Re-grouped {n:,} faces")
+        self.heartbeat(force=True)
+
+    def upgrade_regroup(self) -> None:
+        """Runs once after updating to the better grouping method."""
+        try:
+            if db.val("SELECT value FROM meta WHERE key='group_method'", default=None) == "v2":
+                return
+            if db.val("SELECT COUNT(*) FROM faces", default=0):
+                self.regroup("better grouping after update")
+            db.ex("INSERT INTO meta(key, value) VALUES ('group_method', 'v2') ON CONFLICT(key) DO UPDATE SET value='v2'")
+        except Exception as e:
+            log.exception("Re-grouping faces failed: %s", e)
+
+    def maybe_regroup(self) -> None:
+        """After a face-finding run, re-group the unnamed faces all at once.
+        Faces get a quick group while they're being found; this sorts them
+        out properly. Also runs once after updating to this version."""
+        try:
+            last = int(db.val("SELECT value FROM meta WHERE key='faces_at_regroup'", default=0) or 0)
+            total = db.val("SELECT COUNT(*) FROM faces WHERE rejected=0", default=0)
+            if total - last >= 200:
+                self.regroup(f"{total - last:,} new faces found")
+        except Exception as e:
+            log.exception("Re-grouping faces failed: %s", e)
 
     def embed_manual(self, s, threads: int) -> bool:
         """Works out fingerprints for faces the admin drew by hand."""
@@ -447,6 +483,7 @@ class Worker:
     def run(self):
         set_status("worker", "running", "Started")
         cleanup.mark_interrupted()
+        self.upgrade_regroup()
         try:
             n = scanner.pair_live_photos()
             if n:
