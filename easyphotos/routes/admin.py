@@ -325,6 +325,26 @@ def put_settings(body: dict, user: User = Depends(admin_user)):
 
 # ------------------------------------------------------------ duplicates
 
+def _dup_members(gid: int):
+    rows = db.q(
+        "SELECT a.id, a.filename, a.path, a.size, a.width, a.height, a.taken_at, a.thumb_ver, a.lat, a.kind, a.deleted_at, "
+        "l.name AS library, (SELECT COUNT(*) FROM faces f JOIN persons p ON p.id=f.person_id WHERE f.asset_id=a.id AND p.name IS NOT NULL) AS named_faces, "
+        "(SELECT COUNT(*) FROM asset_tags t WHERE t.asset_id=a.id) AS tags, "
+        "(SELECT COUNT(*) FROM album_assets x WHERE x.asset_id=a.id) AS albums "
+        "FROM dup_members m JOIN assets a ON a.id=m.asset_id JOIN libraries l ON l.id=a.library_id "
+        "WHERE m.group_id=? AND a.deleted_at IS NULL", (gid,))
+    return [dict(m) for m in rows]
+
+
+def _suggest_keep(members):
+    """Keep the copy with the most info (names, tags, albums, location), then the most pixels."""
+    if not members:
+        return None
+    best = max(members, key=lambda m: ((m["named_faces"] or 0) * 4 + (m["tags"] or 0) * 2 + (m["albums"] or 0) * 2 + (1 if m["lat"] else 0),
+                                       (m["width"] or 0) * (m["height"] or 0), m["size"], -m["id"]))
+    return best["id"]
+
+
 @router.get("/duplicates")
 def duplicates(kind: str = "exact", status: str = "open", offset: int = 0, limit: int = 20, user: User = Depends(admin_user)):
     counts = {f"{r['kind']}:{r['status']}": r["n"] for r in db.q("SELECT kind, status, COUNT(*) AS n FROM dup_groups GROUP BY kind, status")}
@@ -334,22 +354,65 @@ def duplicates(kind: str = "exact", status: str = "open", offset: int = 0, limit
         groups = db.q("SELECT * FROM dup_groups WHERE kind=? AND status='open' ORDER BY id LIMIT ? OFFSET ?", (kind, limit, offset))
     out = []
     for g in groups:
-        members = db.q(
-            "SELECT a.id, a.filename, a.path, a.size, a.width, a.height, a.taken_at, a.thumb_ver, a.lat, a.kind, a.deleted_at, "
-            "l.name AS library, (SELECT COUNT(*) FROM faces f JOIN persons p ON p.id=f.person_id WHERE f.asset_id=a.id AND p.name IS NOT NULL) AS named_faces, "
-            "(SELECT COUNT(*) FROM asset_tags t WHERE t.asset_id=a.id) AS tags, "
-            "(SELECT COUNT(*) FROM album_assets x WHERE x.asset_id=a.id) AS albums "
-            "FROM dup_members m JOIN assets a ON a.id=m.asset_id JOIN libraries l ON l.id=a.library_id "
-            "WHERE m.group_id=? AND a.deleted_at IS NULL", (g["id"],))
-        members = [dict(m) for m in members]
+        members = _dup_members(g["id"])
         if len(members) < 2 and status != "kept":
             continue
-        # Suggest keeping the copy with the most info and the most pixels.
-        best = max(members, key=lambda m: ((m["named_faces"] or 0) * 4 + (m["tags"] or 0) * 2 + (m["albums"] or 0) * 2 + (1 if m["lat"] else 0),
-                                           (m["width"] or 0) * (m["height"] or 0), m["size"], -m["id"])) if members else None
         out.append({"id": g["id"], "kind": g["kind"], "status": g["status"], "members": members,
-                    "suggest_keep": best["id"] if best else None})
+                    "suggest_keep": _suggest_keep(members)})
     return {"groups": out, "counts": counts}
+
+
+@router.post("/duplicates/bulk")
+def resolve_duplicates_bulk(body: dict, user: User = Depends(admin_user)):
+    """Handle many groups at once. body: action (hide|delete|keep_both), and either
+    groups=[{id, keep}] or all_kind="exact"|"similar" (every open group, keeping the suggested copy)."""
+    action = body.get("action")
+    if action not in ("hide", "delete", "keep_both"):
+        raise HTTPException(400, "Unknown action.")
+    if action == "delete":
+        if body.get("confirm") != "DELETE":
+            raise HTTPException(400, "Type DELETE to confirm.")
+        if not settings.get("allow_delete"):
+            raise HTTPException(403, "Deleting is turned off in Admin settings.")
+    if body.get("all_kind") in ("exact", "similar"):
+        todo = [(r["id"], None) for r in db.q("SELECT id FROM dup_groups WHERE kind=? AND status='open'", (body["all_kind"],))]
+    else:
+        todo = []
+        for g in body.get("groups") or []:
+            try:
+                todo.append((int(g["id"]), int(g["keep"]) if g.get("keep") else None))
+            except (KeyError, TypeError, ValueError):
+                continue
+    done, moved, errors = 0, 0, []
+    for gid, keep in todo:
+        if db.q1("SELECT id FROM dup_groups WHERE id=? AND status='open'", (gid,)) is None:
+            continue
+        if action == "keep_both":
+            db.ex("UPDATE dup_groups SET status='kept' WHERE id=?", (gid,))
+            done += 1
+            continue
+        members = _dup_members(gid)
+        ids = [m["id"] for m in members]
+        if len(ids) < 2:
+            continue
+        if keep not in ids:
+            keep = _suggest_keep(members)
+        others = [i for i in ids if i != keep]
+        if action == "hide":
+            db.exmany("UPDATE assets SET hidden=1 WHERE id=?", [(a,) for a in others])
+            db.ex("UPDATE dup_groups SET status='resolved' WHERE id=?", (gid,))
+            done += 1
+        else:
+            res = recycle.delete_assets(others)
+            moved += res["moved"]
+            errors += res["errors"]
+            if res["moved"]:
+                db.ex("UPDATE dup_groups SET status='resolved' WHERE id=?", (gid,))
+                done += 1
+            if errors and "read-only" in errors[-1]:
+                break  # the library can't be written to; no point trying the rest
+    audit(None, user, "duplicates: %s on %d groups (%d files to Recycle Bin)", action, done, moved)
+    return {"ok": not errors, "groups": done, "moved": moved, "errors": errors[:10]}
 
 
 @router.post("/duplicates/{gid}")

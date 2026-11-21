@@ -421,33 +421,92 @@ export async function faceGroup(el, p) {
 // ---------------------------------------------------------------- Duplicates
 
 export async function duplicates(el, p, q) {
-  let kind = q.kind || 'exact', autoPicked = false;
+  let kind = q.kind || 'exact', autoPicked = false, offset = 0, counts = {};
+  const groups = new Map(); // id -> { g, keep, sec, checkbox }
+  const selected = new Set();
   const tabs = h('div', { class: 'tabs' });
-  const list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '18px', marginTop: '18px' } });
+  const allBar = h('div', { class: 'row', style: { marginTop: '14px' } });
+  const list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '18px', marginTop: '14px' } });
+  const more = h('div', { style: { textAlign: 'center', padding: '16px' } });
+  const selBar = h('div', { class: 'card hidden dupbar' });
   el.append(head('Library › Duplicates', 'Nothing happens to your files until you pick an action and confirm it.', [
-    h('button', { class: 'btn', onclick: async () => { await post('/api/admin/jobs/duplicates'); toast('Checking for duplicates again…'); } }, 'Check again')]), tabs, list);
-  async function load() {
+    h('button', { class: 'btn', onclick: async () => { await post('/api/admin/jobs/duplicates'); toast('Checking for duplicates again…'); } }, 'Check again')]),
+    tabs, allBar, list, more, selBar);
+
+  const openCount = () => kind === 'kept' ? (counts['exact:kept'] || 0) + (counts['similar:kept'] || 0) : (counts[`${kind}:open`] || 0);
+
+  async function load(reset = true) {
+    if (reset) { offset = 0; groups.clear(); selected.clear(); list.innerHTML = ''; }
     let r;
-    try { r = await api(`/api/admin/duplicates?kind=${kind === 'kept' ? 'exact' : kind}&status=${kind === 'kept' ? 'kept' : 'open'}&limit=20`); } catch (e) { return errToast(e); }
-    const c = r.counts;
-    if (!q.kind && !autoPicked && kind === 'exact' && !c['exact:open'] && c['similar:open']) { autoPicked = true; kind = 'similar'; return load(); }
-    tabs.innerHTML = '';
-    [['exact', `Exact copies · ${num(c['exact:open'] || 0)}`], ['similar', `Look the same · ${num(c['similar:open'] || 0)}`], ['kept', `Kept both · ${num((c['exact:kept'] || 0) + (c['similar:kept'] || 0))}`]]
-      .forEach(([k, label]) => tabs.append(h('button', { class: kind === k ? 'on' : '', onclick: () => { kind = k; load(); } }, label)));
-    tabs.append(h('span', { class: 'hint', style: { marginLeft: 'auto', alignSelf: 'center' } }, kind === 'similar' ? '“Look the same” are resized or re-saved copies. Check them by eye.' : ''));
-    list.innerHTML = '';
-    if (!r.groups.length) list.append(h('div', { class: 'empty' }, icon('dup'), kind === 'kept' ? 'No groups marked “keep both”.' : 'No duplicates found. 🎉'.replace(' 🎉', '')));
-    r.groups.forEach((g, gi) => list.append(group(g, gi)));
+    try { r = await api(`/api/admin/duplicates?kind=${kind === 'kept' ? 'exact' : kind}&status=${kind === 'kept' ? 'kept' : 'open'}&limit=30&offset=${offset}`); } catch (e) { return errToast(e); }
+    counts = r.counts;
+    if (!q.kind && !autoPicked && kind === 'exact' && !counts['exact:open'] && counts['similar:open']) { autoPicked = true; kind = 'similar'; return load(); }
+    offset += r.groups.length;
+    if (!r.groups.length && !groups.size) list.append(h('div', { class: 'empty' }, icon('dup'), kind === 'kept' ? 'No groups marked “keep both”.' : 'No duplicates found.'));
+    r.groups.forEach(g => list.append(group(g)));
+    drawTabs();
+    more.innerHTML = '';
+    if (r.groups.length === 30) more.append(h('button', { class: 'btn', onclick: () => load(false) }, 'Show more'));
+    drawSel();
   }
-  function group(g, gi) {
-    let keep = g.suggest_keep;
+
+  function drawTabs() {
+    tabs.innerHTML = '';
+    [['exact', `Exact copies · ${num(counts['exact:open'] || 0)}`], ['similar', `Look the same · ${num(counts['similar:open'] || 0)}`], ['kept', `Kept both · ${num((counts['exact:kept'] || 0) + (counts['similar:kept'] || 0))}`]]
+      .forEach(([k, label]) => tabs.append(h('button', { class: kind === k ? 'on' : '', onclick: () => { kind = k; load(); } }, label)));
+    allBar.innerHTML = '';
+    if (kind === 'kept' || !openCount()) return;
+    allBar.append(
+      h('button', { class: 'btn small', onclick: () => { groups.forEach((x, id) => { selected.add(id); x.checkbox.checked = true; }); drawSel(); } }, `Select all shown (${groups.size})`),
+      kind === 'exact' && state.allowDelete ? h('button', { class: 'btn small warn', onclick: () => doAll() }, `Delete extra copies in all ${num(openCount())} groups…`) : null,
+      h('span', { class: 'hint' }, kind === 'similar' ? '“Look the same” are resized or re-saved copies. Check them by eye before deleting.' : 'Exact copies are byte-for-byte identical files.'));
+  }
+
+  function drawSel() {
+    selBar.innerHTML = '';
+    selBar.classList.toggle('hidden', !selected.size);
+    if (!selected.size) return;
+    const n = selected.size;
+    selBar.append(h('b', { class: 'grow' }, `${n} group${n > 1 ? 's' : ''} selected`),
+      h('button', { class: 'btn small primary', onclick: () => doSelected('hide') }, 'Hide extra copies'),
+      state.allowDelete ? h('button', { class: 'btn small warn', onclick: () => doSelected('delete') }, 'Delete extra copies…') : null,
+      h('button', { class: 'btn small ghost', onclick: () => doSelected('keep_both') }, 'Keep both'),
+      h('button', { class: 'btn small ghost', onclick: () => { selected.clear(); groups.forEach(x => { x.checkbox.checked = false; }); drawSel(); } }, 'Clear'));
+  }
+
+  async function doSelected(action) {
+    const picks = [...selected].map(id => ({ id, keep: groups.get(id).keep }));
+    const files = picks.reduce((s, x) => s + groups.get(x.id).g.members.length - 1, 0);
+    if (action === 'delete' && !await confirmDialog({ title: `Delete ${files} extra cop${files === 1 ? 'y' : 'ies'}?`, text: `From ${picks.length} group${picks.length > 1 ? 's' : ''}. The copy marked “Keep” in each group stays. The others go to the Recycle Bin, where you can restore them until you empty it.`, confirmLabel: 'Send to Recycle Bin', danger: true, typeWord: 'DELETE' })) return;
+    try {
+      const r = await post('/api/admin/duplicates/bulk', { action, groups: picks, confirm: action === 'delete' ? 'DELETE' : undefined });
+      if (r.errors && r.errors.length) toast(r.errors[0], true);
+      toast(action === 'delete' ? `${num(r.moved)} copies moved to the Recycle Bin.` : action === 'hide' ? `Extra copies hidden in ${r.groups} groups.` : `Kept both in ${r.groups} groups.`);
+      load();
+    } catch (e) { errToast(e); }
+  }
+
+  async function doAll() {
+    const n = openCount();
+    if (!await confirmDialog({ title: `Delete the extra copies in all ${num(n)} groups?`, text: 'In every group of exact copies, the suggested copy is kept (the one with names, tags, albums or location, then the largest). The identical extras go to the Recycle Bin, where you can restore them until you empty it.', confirmLabel: 'Delete extra copies', danger: true, typeWord: 'DELETE' })) return;
+    toast('Working… this can take a minute for lots of groups.');
+    try {
+      const r = await post('/api/admin/duplicates/bulk', { action: 'delete', all_kind: 'exact', confirm: 'DELETE' });
+      if (r.errors && r.errors.length) toast(r.errors[0], true);
+      toast(`${num(r.moved)} copies from ${num(r.groups)} groups moved to the Recycle Bin.`);
+      load();
+    } catch (e) { errToast(e); }
+  }
+
+  function group(g) {
+    const entry = { g, keep: g.suggest_keep };
     const sec = h('section', { class: 'card' });
     const copies = h('div', { class: 'dupgrid' });
     const draw = () => {
       copies.innerHTML = '';
       g.members.forEach(m => {
-        const isKeep = m.id === keep;
-        copies.append(h('div', { class: 'dupcopy' + (isKeep ? ' keep' : ''), onclick: () => { keep = m.id; draw(); }, role: 'radio', 'aria-checked': isKeep ? 'true' : 'false', tabindex: 0 },
+        const isKeep = m.id === entry.keep;
+        copies.append(h('div', { class: 'dupcopy' + (isKeep ? ' keep' : ''), onclick: () => { entry.keep = m.id; draw(); }, role: 'radio', 'aria-checked': isKeep ? 'true' : 'false', tabindex: 0 },
           h('div', { class: 'img' }, img(thumbUrl(m.id, m.thumb_ver)), h('span', { class: 'tag' }, isKeep ? (m.id === g.suggest_keep ? 'Keep (suggested)' : 'Keep') : 'Extra copy')),
           h('div', { class: 'mono muted', style: { wordBreak: 'break-all' } }, `${m.library} / ${m.path}`),
           h('div', { style: { fontSize: '13px', color: 'var(--text2)' } }, `${m.width || '?'} × ${m.height || '?'} · ${fmtBytes(m.size)}`),
@@ -455,26 +514,34 @@ export async function duplicates(el, p, q) {
       });
     };
     draw();
+    const cb = h('input', { type: 'checkbox', 'aria-label': 'Select this group', style: { width: '22px', height: '22px', accentColor: 'var(--accent)' },
+      onchange: () => { cb.checked ? selected.add(g.id) : selected.delete(g.id); drawSel(); } });
+    entry.checkbox = cb;
+    entry.sec = sec;
+    groups.set(g.id, entry);
+    const done = () => { sec.remove(); groups.delete(g.id); selected.delete(g.id); drawSel(); drawTabs(); };
     const others = () => g.members.length - 1;
     sec.append(
-      h('div', { class: 'row' }, h('b', {}, `Group ${gi + 1}`), h('span', { class: 'badge green' }, g.kind === 'exact' ? '100% identical' : 'Look the same'),
+      h('div', { class: 'row' },
+        kind !== 'kept' ? h('label', { class: 'check', style: { minHeight: 0 } }, cb, 'Select') : null,
+        h('span', { class: 'badge green' }, g.kind === 'exact' ? '100% identical' : 'Look the same'),
         h('span', { class: 'hint' }, fmtDateTime(g.members[0]?.taken_at).date)),
       copies,
-      kind === 'kept' ? h('div', { class: 'row' }, h('button', { class: 'btn', onclick: async () => { await post(`/api/admin/duplicates/${g.id}`, { action: 'reopen' }); sec.remove(); } }, 'Check this group again'))
+      kind === 'kept' ? h('div', { class: 'row' }, h('button', { class: 'btn', onclick: async () => { await post(`/api/admin/duplicates/${g.id}`, { action: 'reopen' }); done(); } }, 'Check this group again'))
         : h('div', { class: 'row' },
-          h('button', { class: 'btn primary', onclick: async () => {
-            try { await post(`/api/admin/duplicates/${g.id}`, { action: 'hide', keep }); toast('Extra copy hidden. The file was not touched.'); sec.remove(); } catch (e) { errToast(e); }
+          h('button', { class: 'btn small', onclick: async () => {
+            try { await post(`/api/admin/duplicates/${g.id}`, { action: 'hide', keep: entry.keep }); toast('Extra copy hidden. The file was not touched.'); done(); } catch (e) { errToast(e); }
           } }, `Hide the extra cop${others() > 1 ? 'ies' : 'y'}`),
-          state.allowDelete ? h('button', { class: 'btn warn', onclick: async () => {
-            if (!await confirmDialog({ title: `Delete ${others()} photo${others() > 1 ? 's' : ''}?`, text: 'The extra copy goes to the Recycle Bin. You can restore it until you empty the bin.', confirmLabel: 'Send to Recycle Bin', danger: true, typeWord: 'DELETE' })) return;
+          state.allowDelete ? h('button', { class: 'btn small warn', onclick: async () => {
+            if (!await confirmDialog({ title: `Delete ${others()} photo${others() > 1 ? 's' : ''}?`, text: 'The extra copy goes to the Recycle Bin. You can restore it until you empty the bin.', confirmLabel: 'Send to Recycle Bin', danger: true })) return;
             try {
-              const r = await post(`/api/admin/duplicates/${g.id}`, { action: 'delete', keep, confirm: 'DELETE' });
-              if (r.errors && r.errors.length) toast(r.errors[0], true); else { toast('Moved to the Recycle Bin.'); sec.remove(); }
+              const r = await post(`/api/admin/duplicates/${g.id}`, { action: 'delete', keep: entry.keep, confirm: 'DELETE' });
+              if (r.errors && r.errors.length) toast(r.errors[0], true); else { toast('Moved to the Recycle Bin.'); done(); }
             } catch (e) { errToast(e); }
-          } }, `Delete extra cop${others() > 1 ? 'ies' : 'y'}…`) : null,
-          h('button', { class: 'btn ghost', onclick: async () => { await post(`/api/admin/duplicates/${g.id}`, { action: 'keep_both' }); toast('Kept both.'); sec.remove(); } }, 'Keep both'),
-          h('button', { class: 'btn ghost', style: { marginLeft: 'auto' }, onclick: () => sec.remove() }, 'Skip')),
-      h('span', { class: 'hint' }, 'Click a copy to choose which one to keep. “Hide” only hides it in EasyPhotos. “Delete” sends it to the Recycle Bin.'));
+          } }, `Delete extra cop${others() > 1 ? 'ies' : 'y'}`) : null,
+          h('button', { class: 'btn small ghost', onclick: async () => { await post(`/api/admin/duplicates/${g.id}`, { action: 'keep_both' }); toast('Kept both.'); done(); } }, 'Keep both'),
+          h('button', { class: 'btn small ghost', style: { marginLeft: 'auto' }, onclick: done }, 'Skip')),
+      h('span', { class: 'hint' }, 'Tap a copy to choose which one to keep.'));
     return sec;
   }
   load();

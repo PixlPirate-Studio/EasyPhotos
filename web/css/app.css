@@ -313,3 +313,6 @@ main.content{flex:1 1 auto;min-width:0;padding:20px 28px 60px}
 .tree-toggle:hover{background:var(--line);color:var(--text)}
 .tree-toggle svg.i{width:16px;height:16px}
 @media (max-width:600px){.act-row{grid-template-columns:auto minmax(0,1fr)}.act-kind{display:none}.folder-row{grid-template-columns:minmax(0,1fr) auto auto;gap:10px;padding:8px 10px;font-size:13px}.folder-row>:nth-child(3){display:none}}
+
+.dupbar{position:sticky;bottom:16px;z-index:6;flex-direction:row;align-items:center;flex-wrap:wrap;gap:8px;border-color:var(--accent);margin-top:16px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+@media (max-width:900px){.dupbar{bottom:calc(var(--tabbar) + env(safe-area-inset-bottom) + 10px)}}
