@@ -34,6 +34,7 @@ DEFAULTS = {
     # Optional extras
     "duplicates_enabled": True,
     "quality_enabled": True,
+    "faces_favorites_only": False,
     "places_enabled": True,
     "xmp_enabled": False,
     "video_compat": True,

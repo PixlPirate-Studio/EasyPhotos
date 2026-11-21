@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api")
 
 def _person_out(r):
     return {"id": r["id"], "name": r["name"], "count": r["face_count"], "cover": r["cover_face_id"],
-            "hidden": bool(r["hidden"]), "unmatched": bool(r["unmatched"])}
+            "hidden": bool(r["hidden"]), "unmatched": bool(r["unmatched"]), "favorite": bool(r["favorite"])}
 
 
 @router.get("/people")
@@ -25,11 +25,11 @@ def people(user: User = Depends(current_user)):
         rows = db.q(
             "SELECT p.*, (SELECT COUNT(DISTINCT f.asset_id) FROM faces f JOIN assets a ON a.id=f.asset_id "
             f"WHERE f.person_id=p.id AND f.rejected=0 AND a.deleted_at IS NULL AND a.hidden=0{lc}) AS vis "
-            "FROM persons p WHERE p.name IS NOT NULL AND p.hidden=0 ORDER BY p.face_count DESC", la)
+            "FROM persons p WHERE p.name IS NOT NULL AND p.hidden=0 ORDER BY p.favorite DESC, p.face_count DESC", la)
         rows = [r for r in rows if r["vis"]]
     else:
         hidden = "" if user.is_admin else " AND hidden=0"
-        rows = db.q(f"SELECT * FROM persons WHERE name IS NOT NULL AND face_count>0{hidden} ORDER BY hidden, face_count DESC")
+        rows = db.q(f"SELECT * FROM persons WHERE name IS NOT NULL AND face_count>0{hidden} ORDER BY hidden, favorite DESC, face_count DESC")
     return [_person_out(r) for r in rows]
 
 
@@ -123,6 +123,8 @@ def edit_person(person_id: int, body: dict, user: User = Depends(admin_user)):
         r = db.q1("SELECT centroid FROM persons WHERE id=?", (person_id,))
         s = cluster.suggestion_for(r["centroid"], cluster.named_cache(), cluster.not_people([person_id])[person_id])
         return {"id": person_id, "merged": False, "suggest": {"id": s[0], "name": s[1], "match": _match_word(s[2])} if s else None}
+    if "favorite" in body:
+        db.ex("UPDATE persons SET favorite=? WHERE id=?", (1 if body["favorite"] else 0, target))
     if "hidden" in body:
         db.ex("UPDATE persons SET hidden=? WHERE id=?", (1 if body["hidden"] else 0, target))
     if "unmatched" in body:
@@ -191,12 +193,26 @@ def face_groups(tab: str = "needs", offset: int = 0, limit: int = 60, sort: str 
     if tab not in where:
         raise HTTPException(400, "Unknown tab.")
     possible, cache = _possible(min_faces)
+    fav_only = cluster.favorites_only()
+    hidden_by_fav = 0
     if tab == "possible":
         page = possible[offset:offset + limit]
         rows = [x[1] for x in page]
         sugg = {x[1]["id"]: x[2] for x in page}
+    elif fav_only and tab in ("needs", "single"):
+        # only groups that look like a favorite person
+        keep = [x for x in possible if (x[1]["face_count"] >= min_faces) == (tab == "needs")]
+        if sort == "new":
+            keep.sort(key=lambda x: -(x[1]["created_at"] or 0))
+        else:
+            keep.sort(key=lambda x: (-x[1]["face_count"], x[1]["id"]))
+        page = keep[offset:offset + limit]
+        rows = [x[1] for x in page]
+        sugg = {x[1]["id"]: x[2] for x in page}
     else:
         order = "created_at DESC" if sort == "new" else "face_count DESC, id"
+        if tab == "named":
+            order = "favorite DESC, " + order
         rows = db.q(f"SELECT * FROM persons WHERE {where[tab]} ORDER BY {order} LIMIT ? OFFSET ?", (limit, offset))
         sugg = {}
         if tab in ("needs", "single", "unmatched") and cache["ids"]:
@@ -205,12 +221,17 @@ def face_groups(tab: str = "needs", offset: int = 0, limit: int = 60, sort: str 
                 s = cluster.suggestion_for(r["centroid"], cache, nots.get(r["id"]))
                 if s:
                     sugg[r["id"]] = s
+    if fav_only:
+        all_unnamed = db.val(f"SELECT COUNT(*) FROM persons WHERE ({where['needs']}) OR ({where['single']})", default=0)
+        hidden_by_fav = max(0, all_unnamed - len(possible))
     counts = {
-        "needs": db.val(f"SELECT COUNT(*) FROM persons WHERE {where['needs']}", default=0),
+        "needs": sum(1 for x in possible if x[1]["face_count"] >= min_faces) if fav_only else
+        db.val(f"SELECT COUNT(*) FROM persons WHERE {where['needs']}", default=0),
         "possible": len(possible),
         "named": db.val("SELECT COUNT(*) FROM persons WHERE name IS NOT NULL", default=0),
         "unmatched": db.val("SELECT COUNT(*) FROM persons WHERE name IS NULL AND unmatched=1", default=0),
-        "single": db.val(f"SELECT COUNT(*) FROM persons WHERE {where['single']}", default=0),
+        "single": sum(1 for x in possible if x[1]["face_count"] < min_faces) if fav_only else
+        db.val(f"SELECT COUNT(*) FROM persons WHERE {where['single']}", default=0),
         "hidden": db.val("SELECT COUNT(*) FROM persons WHERE hidden=1", default=0),
     }
     out = []
@@ -226,7 +247,8 @@ def face_groups(tab: str = "needs", offset: int = 0, limit: int = 60, sort: str 
         if s:
             item["suggest"] = {"id": s[0], "name": s[1], "match": _match_word(s[2])}
         out.append(item)
-    return {"items": out, "counts": counts}
+    favorites = db.val("SELECT COUNT(*) FROM persons WHERE favorite=1 AND name IS NOT NULL", default=0)
+    return {"items": out, "counts": counts, "favorites_only": fav_only, "favorites": favorites, "hidden_by_favorites": hidden_by_fav}
 
 
 @router.get("/faces/{face_id}/crop")

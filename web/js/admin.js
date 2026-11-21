@@ -330,8 +330,17 @@ export async function faces(el, p, q) {
     tabs.innerHTML = '';
     Object.entries(names).forEach(([k, label]) => tabs.append(h('button', { class: tab === k ? 'on' : '', onclick: () => { tab = k; history.replaceState(null, '', `#/admin/faces?tab=${k}`); load(true); } }, `${label} · ${num(r.counts[k])}`)));
     sortSel.classList.toggle('hidden', tab === 'possible');
-    intro.textContent = tab === 'possible' ? 'Groups that look like someone you already named, best matches first. Tap “Yes” if it’s them, or “Not …” if it isn’t and it will stop suggesting that person.' : '';
-    intro.classList.toggle('hidden', tab !== 'possible');
+    intro.innerHTML = '';
+    if (r.favorites_only) {
+      intro.append(h('div', { class: 'card', style: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: '8px', borderColor: 'var(--accent)', marginBottom: '8px' } },
+        icon('star'),
+        h('span', { class: 'grow' }, r.favorites
+          ? `Only looking for your ${num(r.favorites)} favorite${r.favorites > 1 ? 's' : ''}. ${r.hidden_by_favorites ? `${num(r.hidden_by_favorites)} other groups are tucked away.` : ''}`
+          : 'Only looking for favorites, but nobody is starred yet. Star people in the Named tab.'),
+        h('button', { class: 'btn small', onclick: async () => { try { await api('/api/admin/settings', { method: 'PUT', body: { faces_favorites_only: false } }); toast('Looking for everyone again.'); load(true); } catch (e) { errToast(e); } } }, 'Show everyone')));
+    }
+    if (tab === 'possible') intro.append(h('div', {}, r.favorites_only ? 'Groups that look like one of your favorites, best matches first. Tap “Yes” if it’s them, or “Not …” if it isn’t.' : 'Groups that look like someone you already named, best matches first. Tap “Yes” if it’s them, or “Not …” if it isn’t and it will stop suggesting that person.'));
+    intro.classList.toggle('hidden', !intro.childNodes.length);
     if (!r.items.length && !offset) {
       grid.append(h('div', { class: 'empty', style: { gridColumn: '1/-1' } }, icon('scan'),
         tab === 'needs' ? 'Nothing waiting for a name. If face finding is still running, more will show up here.'
@@ -392,7 +401,7 @@ export async function faces(el, p, q) {
           h('span', { class: 'hint' }, item.name ? `${num(item.photos)} photos` : item.years))),
       item.samples.length ? h('div', { class: 'samples' }, item.samples.map(s => {
         const wrap = h('div', { class: 'sample' }, h('img', { src: faceUrl(s), alt: '', loading: 'lazy', decoding: 'async' }));
-        wrap.append(trashBtn('Remove just this face', (e) => trashOne(e, s, wrap)));
+        if (!item.name) wrap.append(trashBtn('Remove just this face', (e) => trashOne(e, s, wrap)));
         return wrap;
       })) : null,
       sug ? h('div', { class: 'suggest-box' },
@@ -411,6 +420,16 @@ export async function faces(el, p, q) {
           } }, `Not ${sug.name}`))) : null,
       input,
       h('div', { class: 'row', style: { gap: '6px', flexWrap: 'nowrap' } },
+        item.name ? (() => {
+          const b = h('button', { class: 'btn small' + (item.favorite ? ' primary' : ''), title: 'Favorite', 'aria-label': 'Favorite', onclick: async () => {
+            try {
+              await api(`/api/people/${item.id}`, { method: 'PATCH', body: { favorite: !item.favorite } });
+              item.favorite = !item.favorite; b.classList.toggle('primary', item.favorite);
+              toast(item.favorite ? `${item.name} is a favorite.` : `${item.name} is no longer a favorite.`);
+            } catch (e) { errToast(e); }
+          } }, icon('star'));
+          return b;
+        })() : null,
         h('button', { class: 'btn small grow' + (sug ? '' : ' primary'), onclick: save }, item.name ? 'Rename' : 'Save name'),
         tab === 'unmatched' || tab === 'hidden'
           ? h('button', { class: 'btn small grow', onclick: async () => { await api(`/api/people/${item.id}`, { method: 'PATCH', body: { unmatched: false, hidden: false } }); c.remove(); } }, 'Move back')
@@ -1275,6 +1294,7 @@ export async function settings(el) {
       h('span', { class: 'hint', style: { marginTop: '-10px' } }, 'Turn on only what you want. Anything that’s off uses no memory or CPU.'),
       h('div', { class: 'optgrid' },
         chk('duplicates_enabled', 'Duplicate finder', 'Spots copies while making thumbnails. Never deletes on its own.'),
+        chk('faces_favorites_only', 'Only look for favorite people', 'Faces only asks about groups that look like people you starred, and new photos are only matched to them. Nobody else is deleted; turn this off to see everyone again.'),
         chk('quality_enabled', 'Blurry photo finder', 'Checks each photo for blur and darkness in the background (quick). Never deletes on its own.'),
         chk('places_enabled', 'Place names (offline)', 'Turns GPS into “Whiteland, Indiana” with a built-in town list. No internet.'),
         chk('xmp_enabled', 'Save names, tags and descriptions to .xmp files', 'Small file next to each photo so your work goes with you to any app. Needs Read/Write access.'),

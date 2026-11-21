@@ -330,3 +330,4 @@ main.content{flex:1 1 auto;min-width:0;padding:20px 28px 60px}
 .face-trash:hover{background:#E5534B;color:#fff}
 .toast{display:flex;align-items:center;gap:12px}
 .toast-act{background:none;border:0;color:var(--accent);font-weight:700;font-size:inherit;cursor:pointer;padding:4px 2px;margin-left:auto}
+.fav-star{color:#F5C451}

@@ -49,7 +49,9 @@ class Clusterer:
         self.load()
 
     def load(self):
-        rows = db.q("SELECT id, centroid, face_count FROM persons WHERE centroid IS NOT NULL")
+        # With favorites-only on, new faces never join named people who aren't favorites.
+        extra = " AND (name IS NULL OR favorite=1)" if favorites_only() else ""
+        rows = db.q(f"SELECT id, centroid, face_count FROM persons WHERE centroid IS NOT NULL{extra}")
         self.ids = [r["id"] for r in rows]
         self.counts = [r["face_count"] for r in rows]
         self.mat = np.stack([from_blob(r["centroid"]) for r in rows]) if rows else np.zeros((0, 512), np.float32)
@@ -342,8 +344,15 @@ def not_people(person_ids) -> dict:
     return out
 
 
+def favorites_only() -> bool:
+    return bool(settings.get("faces_favorites_only"))
+
+
 def named_cache():
-    rows = db.q("SELECT id, name, centroid FROM persons WHERE name IS NOT NULL AND centroid IS NOT NULL")
+    """Named people to match against. With "Only look for favorite people"
+    on, only the favorites."""
+    extra = " AND favorite=1" if favorites_only() else ""
+    rows = db.q(f"SELECT id, name, centroid FROM persons WHERE name IS NOT NULL AND centroid IS NOT NULL{extra}")
     return {
         "ids": [r["id"] for r in rows],
         "names": [r["name"] for r in rows],

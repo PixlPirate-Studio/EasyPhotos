@@ -316,6 +316,8 @@ MIGRATIONS = [
     ("assets", "sharpness", "REAL"),
     ("assets", "brightness", "REAL"),
     ("assets", "quality_ok", "INTEGER NOT NULL DEFAULT 0"),
+    # favorite people: with "Only look for favorite people" on, only they get matched
+    ("persons", "favorite", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 

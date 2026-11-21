@@ -57,14 +57,23 @@ export async function people(el) {
     return;
   }
   el.append(h('div', { class: 'pgrid' }, list.map(p => h('a', { class: 'pcard', href: `#/people/${p.id}`, style: p.hidden ? { opacity: 0.55 } : null },
-    personFace(p.cover, 96), h('span', { class: 'n' }, p.name), h('span', { class: 'hint' }, p.hidden ? 'Hidden' : `${num(p.count)} faces`)))));
+    personFace(p.cover, 96), h('span', { class: 'n' }, p.favorite ? h('span', { class: 'fav-star', 'aria-label': 'Favorite' }, '★ ') : null, p.name), h('span', { class: 'hint' }, p.hidden ? 'Hidden' : `${num(p.count)} faces`)))));
 }
 
 export async function person(el, p) {
   const pr = await api(`/api/people/${p.id}`);
   const actions = [];
   if (state.user.is_admin) {
-    actions.push(
+    const star = h('button', { class: 'btn' + (pr.favorite ? ' primary' : ''), onclick: async () => {
+      try {
+        await api(`/api/people/${p.id}`, { method: 'PATCH', body: { favorite: !pr.favorite } });
+        pr.favorite = !pr.favorite;
+        star.classList.toggle('primary', pr.favorite);
+        star.lastChild.textContent = pr.favorite ? 'Favorite' : 'Add to favorites';
+        toast(pr.favorite ? `${pr.name} is a favorite.` : `${pr.name} is no longer a favorite.`);
+      } catch (e) { errToast(e); }
+    } }, icon('star'), h('span', {}, pr.favorite ? 'Favorite' : 'Add to favorites'));
+    actions.push(star,
       h('button', { class: 'btn', onclick: async () => {
         const name = await promptDialog({ title: 'Rename', label: 'Name', value: pr.name || '' });
         if (!name) return;
