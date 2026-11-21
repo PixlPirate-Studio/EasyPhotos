@@ -324,6 +324,11 @@ class Worker:
                 entries.append(("faces", "info", f"{'No faces' if not n else f'{n} face' + ('s' if n > 1 else '')} in {rel_label(paths.get(aid))}"))
             except Exception as e:
                 log.warning("Face scan failed for asset %s: %s", aid, e)
+                # don't leave half-saved faces behind for this photo
+                try:
+                    db.ex("DELETE FROM faces WHERE asset_id=? AND manual=0 AND person_id IS NULL", (aid,))
+                except Exception:
+                    pass
                 db.ex("UPDATE assets SET face_status=-1, error=? WHERE id=?", (str(e)[:300], aid))
                 entries.append(("faces", "warning", f"Face finding failed for {rel_label(paths.get(aid))}: {e}"))
         activity(entries)
@@ -358,6 +363,23 @@ class Worker:
         activity([("faces", "info", f"Finished re-grouping {n:,} faces into {groups:,} groups in {time.time() - t:.0f} s")])
         set_status("faces", "idle", f"Re-grouped {n:,} faces")
         self.heartbeat(force=True)
+
+    def repair_face_failures(self) -> None:
+        """Photos that failed with "FOREIGN KEY constraint failed" (a group was
+        merged while faces were being saved): remove the half-saved faces
+        and look at those photos again."""
+        try:
+            ids = [r["id"] for r in db.q("SELECT id FROM assets WHERE face_status=-1 AND error LIKE '%FOREIGN KEY%'")]
+            if not ids:
+                return
+            for start in range(0, len(ids), 500):
+                part = ids[start:start + 500]
+                marks = ",".join("?" * len(part))
+                db.ex(f"DELETE FROM faces WHERE asset_id IN ({marks}) AND manual=0 AND person_id IS NULL", part)
+                db.ex(f"UPDATE assets SET face_status=0, error=NULL WHERE id IN ({marks})", part)
+            activity([("faces", "info", f"Looking again at {len(ids):,} photos where face finding was interrupted by a group change")])
+        except Exception as e:
+            log.exception("Repairing face failures failed: %s", e)
 
     def upgrade_regroup(self) -> None:
         """Runs once after updating to the better grouping method."""
@@ -493,6 +515,7 @@ class Worker:
     def run(self):
         set_status("worker", "running", "Started")
         cleanup.mark_interrupted()
+        self.repair_face_failures()
         self.upgrade_regroup()
         try:
             n = scanner.pair_live_photos()

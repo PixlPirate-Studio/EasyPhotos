@@ -45,13 +45,28 @@ class Clusterer:
 
     def __init__(self):
         self.thr = settings.similarity_threshold()
+        self.touched = set()
+        self.load()
+
+    def load(self):
         rows = db.q("SELECT id, centroid, face_count FROM persons WHERE centroid IS NOT NULL")
         self.ids = [r["id"] for r in rows]
         self.counts = [r["face_count"] for r in rows]
         self.mat = np.stack([from_blob(r["centroid"]) for r in rows]) if rows else np.zeros((0, 512), np.float32)
-        self.touched = set()
 
     def assign(self, face_id: int, emb: np.ndarray) -> int:
+        try:
+            return self._assign(face_id, emb)
+        except Exception as e:
+            if "FOREIGN KEY" not in str(e):
+                raise
+            # The group was merged or removed a moment ago (for example the admin
+            # tapped "Yes, it's X"). Reload the current groups and try again.
+            self.load()
+            self.touched = {p for p in self.touched if p in set(self.ids)}
+            return self._assign(face_id, emb)
+
+    def _assign(self, face_id: int, emb: np.ndarray) -> int:
         best_i, best_sim = -1, -1.0
         if len(self.ids):
             sims = self.mat @ emb
@@ -75,7 +90,11 @@ class Clusterer:
 
     def finish(self):
         for pid in self.touched:
-            recompute_person(pid)
+            try:
+                recompute_person(pid)
+            except Exception as e:
+                if "FOREIGN KEY" not in str(e):
+                    raise  # otherwise: merged away meanwhile; the merge already updated it
         self.touched.clear()
 
 
