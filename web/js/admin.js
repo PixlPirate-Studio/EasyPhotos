@@ -547,6 +547,73 @@ export async function duplicates(el, p, q) {
   load();
 }
 
+// ---------------------------------------------------------------- Empty folders
+export async function emptyFolders(el) {
+  const body = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '18px', marginTop: '14px' } });
+  const selBar = h('div', { class: 'card hidden dupbar' });
+  const selected = new Map(); // key -> {library_id, rel, cb}
+  const findBtn = h('button', { class: 'btn primary', onclick: () => look() }, 'Look for empty folders');
+  el.append(head('Library › Empty folders', 'Finds folders with nothing in them so you can tidy up. Nothing is removed until you pick folders and confirm.', [findBtn]),
+    body, selBar);
+  body.append(h('div', { class: 'empty' }, icon('folder'), 'Press “Look for empty folders” to check all your libraries.'));
+
+  function drawSel() {
+    selBar.innerHTML = '';
+    selBar.classList.toggle('hidden', !selected.size);
+    if (!selected.size) return;
+    const n = selected.size;
+    selBar.append(h('b', { class: 'grow' }, `${num(n)} folder${n > 1 ? 's' : ''} selected`),
+      h('button', { class: 'btn small warn', onclick: removeSelected }, `Remove ${n > 1 ? 'them' : 'it'}…`),
+      h('button', { class: 'btn small ghost', onclick: () => { selected.forEach(x => { x.cb.checked = false; }); selected.clear(); drawSel(); } }, 'Clear'));
+  }
+
+  async function removeSelected() {
+    const n = selected.size;
+    if (!await confirmDialog({ title: `Remove ${num(n)} empty folder${n > 1 ? 's' : ''}?`,
+      text: 'Each folder is checked again right before it is removed. If anything was put in it since you looked, it is left alone. Empty folders do not go to the Recycle Bin, since there is nothing in them to restore.',
+      confirmLabel: 'Remove folders', danger: true })) return;
+    try {
+      const r = await post('/api/admin/empty-folders/remove', { items: [...selected.values()].map(x => ({ library_id: x.library_id, rel: x.rel })) });
+      if (r.errors.length) toast(r.errors[0], true);
+      toast(`Removed ${num(r.removed)} empty folder${r.removed === 1 ? '' : 's'}.`);
+      look();
+    } catch (e) { errToast(e); }
+  }
+
+  async function look() {
+    selected.clear(); drawSel();
+    findBtn.disabled = true; findBtn.textContent = 'Looking…';
+    body.innerHTML = '';
+    body.append(h('div', { class: 'empty' }, icon('folder'), 'Looking through every folder… this can take a little while on big libraries.'));
+    let r;
+    try { r = await api('/api/admin/empty-folders'); } catch (e) { errToast(e); body.innerHTML = ''; return; }
+    finally { findBtn.disabled = false; findBtn.textContent = 'Look again'; }
+    body.innerHTML = '';
+    const total = r.libraries.reduce((s, l) => s + l.folders.length, 0);
+    body.append(h('div', { class: 'hint' }, total ? `Found ${num(total)} empty folder${total > 1 ? 's' : ''} in ${r.seconds} s.` : `No empty folders found (checked in ${r.seconds} s).`));
+    r.libraries.forEach(lib => {
+      if (!lib.folders.length) return;
+      const rows = h('div', { style: { display: 'flex', flexDirection: 'column' } });
+      const cbs = [];
+      lib.folders.forEach(f => {
+        const key = `${lib.id}:${f.rel}`;
+        const cb = h('input', { type: 'checkbox', disabled: !lib.writable, style: { width: '20px', height: '20px', accentColor: 'var(--accent)', flex: 'none' },
+          onchange: () => { cb.checked ? selected.set(key, { library_id: lib.id, rel: f.rel, cb }) : selected.delete(key); drawSel(); } });
+        cbs.push([key, f, cb]);
+        const notes = [f.subfolders ? `has ${num(f.subfolders)} empty folder${f.subfolders > 1 ? 's' : ''} inside` : null,
+          f.junk_count ? `only system files: ${f.junk.join(', ')}${f.junk_count > f.junk.length ? '…' : ''}` : null].filter(Boolean).join(' · ');
+        rows.append(h('label', { class: 'check', style: { alignItems: 'flex-start', padding: '10px 0', borderTop: '1px solid var(--line)', minHeight: 0 } }, cb,
+          h('div', { style: { minWidth: 0 } }, h('div', { class: 'mono', style: { wordBreak: 'break-all' } }, f.rel), notes ? h('div', { class: 'hint' }, notes) : null)));
+      });
+      body.append(h('section', { class: 'card' },
+        h('div', { class: 'row' }, h('b', { class: 'grow' }, `${lib.name} · ${num(lib.folders.length)}`),
+          lib.writable ? h('button', { class: 'btn small', onclick: () => { cbs.forEach(([key, f, cb]) => { cb.checked = true; selected.set(key, { library_id: lib.id, rel: f.rel, cb }); }); drawSel(); } }, 'Select all') : null),
+        !lib.writable ? h('div', { class: 'hint', style: { color: 'var(--orange, #F5A35C)' } }, 'This library is read-only, so folders can’t be removed. Change its folder mapping in Unraid to Read/Write if you want to.') : null,
+        rows));
+    });
+  }
+}
+
 // ---------------------------------------------------------------- Hidden & Recycle Bin
 
 export async function hidden(el) {

@@ -278,7 +278,7 @@ export async function more(el) {
     link('#/albums', 'album', 'Albums'), link('#/tags', 'tag', 'Tags'), link('#/favorites', 'heart', 'Favorites'),
     u.is_admin ? [
       h('div', { class: 'label hint', style: { marginTop: '10px' } }, 'LIBRARY'),
-      link('#/admin/library', 'folder', 'Folders & scanning'), link('#/admin/faces', 'scan', 'Faces'), link('#/admin/duplicates', 'dup', 'Duplicates'),
+      link('#/admin/library', 'folder', 'Folders & scanning'), link('#/admin/faces', 'scan', 'Faces'), link('#/admin/duplicates', 'dup', 'Duplicates'), link('#/admin/empty-folders', 'folder', 'Empty folders'),
       link('#/admin/hidden', 'eyeoff', 'Hidden'), link('#/admin/recycle', 'trash', 'Recycle Bin'),
       h('div', { class: 'label hint', style: { marginTop: '10px' } }, 'ADMIN'),
       link('#/admin/users', 'users', 'Users'), link('#/admin/apikeys', 'key', 'API keys'), link('#/admin/settings', 'settings', 'Settings'), link('#/admin/logs', 'file', 'Logs'),

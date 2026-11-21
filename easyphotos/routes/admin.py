@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from .. import config, db, recycle, settings
+from .. import config, db, emptydirs, recycle, settings
 from ..security import ROLES, User, admin_user, audit
 from .common import ids_param
 
@@ -451,6 +451,43 @@ def resolve_duplicate(gid: int, body: dict, user: User = Depends(admin_user)):
 
 
 # ------------------------------------------------------------ recycle bin
+
+@router.get("/empty-folders")
+def empty_folders(user: User = Depends(admin_user)):
+    """Looks through every library for folders with nothing in them."""
+    started = time.time()
+    out = []
+    for r in db.q("SELECT * FROM libraries ORDER BY name"):
+        p = Path(r["path"])
+        found = emptydirs.find(r["path"]) if p.is_dir() else []
+        out.append({"id": r["id"], "name": r["name"], "path": r["path"], "exists": p.is_dir(),
+                    "writable": os.access(p, os.W_OK) if p.is_dir() else False,
+                    "folders": [{"rel": f["rel"], "subfolders": f["subfolders"], "junk": f["junk"],
+                                 "junk_count": f["junk_count"]} for f in found]})
+    return {"libraries": out, "seconds": round(time.time() - started, 1)}
+
+
+@router.post("/empty-folders/remove")
+def remove_empty_folders(body: dict, user: User = Depends(admin_user)):
+    """body: {items: [{library_id, rel}]}. Each folder is checked again before removal."""
+    libs = {r["id"]: r for r in db.q("SELECT * FROM libraries")}
+    removed, errors = 0, []
+    for it in (body.get("items") or [])[:5000]:
+        lib = libs.get(int(it.get("library_id") or 0))
+        rel = str(it.get("rel") or "")
+        if not lib or not rel:
+            continue
+        if not os.access(lib["path"], os.W_OK):
+            errors.append(f"{lib['name']} is read-only. Change the folder mapping in Unraid to Read/Write to remove folders.")
+            continue
+        err = emptydirs.remove(lib["path"], rel)
+        if err:
+            errors.append(err)
+        else:
+            removed += 1
+    audit(None, user, "removed %s empty folder(s)", removed)
+    return {"ok": not errors, "removed": removed, "errors": list(dict.fromkeys(errors))[:10]}
+
 
 @router.get("/recycle")
 def recycle_list(offset: int = 0, limit: int = 200, user: User = Depends(admin_user)):
