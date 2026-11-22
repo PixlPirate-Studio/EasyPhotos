@@ -51,6 +51,15 @@ def activity(entries) -> None:
         db.ex("DELETE FROM activity WHERE id <= (SELECT MAX(id) - 2000 FROM activity)")
 
 
+def _overlap(a, b) -> float:
+    """How much two boxes (x1, y1, x2, y2) overlap: 0 = not at all, 1 = the same box."""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
 def rel_label(row) -> str:
     return row["path"] if row else "?"
 
@@ -103,7 +112,8 @@ class Worker:
             name = r["name"]
             args = json.loads(r["args"] or "{}")
             log.debug("Command: %s %s", name, args)
-            friendly = {"scan": "Scan for new photos requested", "find_faces": "Find faces started", "rescan_faces": "Re-scan of all faces started",
+            friendly = {"scan": "Scan for new photos requested", "find_faces": "Find faces started", "rescan_faces": "Re-scan of all faces started (removed faces stay removed)",
+                        "find_all_faces_again": "Finding all faces again, including ones you removed",
                         "recluster": "Re-grouping faces", "rebuild_thumbs": "Rebuilding all thumbnails", "duplicates": "Duplicate check requested",
                         "refresh_places": "Updating place names", "forget_names": "Removing all names and starting over",
                         "find_empty_folders": "Look for empty folders requested", "find_other_files": "Look for non-photo files requested",
@@ -121,10 +131,12 @@ class Worker:
             elif name == "find_faces":
                 settings.set_many({"faces_started": True, "faces_enabled": True})
                 db.ex("UPDATE assets SET face_status=0 WHERE face_status=-1")
-            elif name == "rescan_faces":
+            elif name in ("rescan_faces", "find_all_faces_again"):
                 # Throw away automatic faces in groups without a name and look again.
+                # Faces removed with the trash can stay removed, unless it's "Find all faces again".
+                keep_removed = "" if name == "find_all_faces_again" else " AND rejected=0"
                 db.ex("DELETE FROM faces WHERE manual=0 AND confirmed=0 AND (person_id IS NULL OR person_id IN "
-                      "(SELECT id FROM persons WHERE name IS NULL))")
+                      f"(SELECT id FROM persons WHERE name IS NULL)){keep_removed}")
                 db.ex("DELETE FROM persons WHERE name IS NULL")
                 db.ex("UPDATE assets SET face_status=0")
                 settings.set_many({"faces_started": True})
@@ -378,7 +390,7 @@ class Worker:
             log.exception("Face finding failed for a batch of %d photos: %s", len(ids), e)
             if ids:
                 marks = ",".join("?" * len(ids))
-                db.ex(f"DELETE FROM faces WHERE asset_id IN ({marks}) AND manual=0 AND person_id IS NULL", ids)
+                db.ex(f"DELETE FROM faces WHERE asset_id IN ({marks}) AND manual=0 AND person_id IS NULL AND rejected=0", ids)
                 db.ex(f"UPDATE assets SET face_status=-1, error=? WHERE id IN ({marks}) AND face_status=0",
                       [f"Face finding failed: {type(e).__name__}: {e}"[:300]] + ids)
                 activity([("faces", "error", f"Face finding failed for {len(ids)} photos ({type(e).__name__}: {e}). Skipped them; see Logs.")])
@@ -399,7 +411,7 @@ class Worker:
                 set_status("faces", "idle", "Done")
             return False
         try:
-            from .faces import get_engine, to_blob
+            from .faces import from_blob, get_engine, to_blob
             engine = get_engine(threads)
         except Exception as e:
             log.error("Face AI could not start: %s", e)
@@ -423,9 +435,25 @@ class Worker:
                     rgb = np.asarray(im.convert("RGB"))
                 ih, iw = rgb.shape[:2]
                 found = engine.detect(rgb, min_score=min_score, min_size=min_size)
+                # Faces the admin removed (trash can) stay removed: skip any face in the
+                # same spot, or that is clearly the same face, as a removed one in this photo.
+                removed = [(r2["x1"], r2["y1"], r2["x2"], r2["y2"], from_blob(r2["embedding"]) if r2["embedding"] else None)
+                           for r2 in db.q("SELECT x1, y1, x2, y2, embedding FROM faces WHERE asset_id=? AND rejected=1", (aid,))]
+                # Faces already kept on this photo (named, or drawn by hand) aren't added a second time.
+                kept = [(r2["x1"], r2["y1"], r2["x2"], r2["y2"])
+                        for r2 in db.q("SELECT x1, y1, x2, y2 FROM faces WHERE asset_id=? AND rejected=0", (aid,))]
+                skipped = 0
                 for box, score, kps in found:
                     emb = engine.embed(rgb, kps)
                     x1, y1, x2, y2 = (float(v) for v in box)
+                    nb = (x1 / iw, y1 / ih, x2 / iw, y2 / ih)
+                    if removed and any(_overlap(nb, rb[:4]) >= 0.35 or (rb[4] is not None and float(np.dot(emb, rb[4])) >= 0.6)
+                                       for rb in removed):
+                        skipped += 1
+                        continue
+                    if kept and any(_overlap(nb, kb) >= 0.35 for kb in kept):
+                        skipped += 1
+                        continue
                     cur = db.ex(
                         "INSERT INTO faces(asset_id, x1, y1, x2, y2, score, embedding, created_at) VALUES (?,?,?,?,?,?,?,?)",
                         (aid, x1 / iw, y1 / ih, x2 / iw, y2 / ih, score, to_blob(emb), time.time()))
@@ -433,13 +461,13 @@ class Worker:
                     save_face_crop(fid, rgb, (x1, y1, x2, y2))
                     cl.assign(fid, emb)
                 db.ex("UPDATE assets SET face_status=1 WHERE id=?", (aid,))
-                n = len(found)
+                n = len(found) - skipped
                 entries.append(("faces", "info", f"{'No faces' if not n else f'{n} face' + ('s' if n > 1 else '')} in {rel_label(paths.get(aid))}"))
             except Exception as e:
                 log.warning("Face scan failed for asset %s: %s", aid, e)
                 # don't leave half-saved faces behind for this photo
                 try:
-                    db.ex("DELETE FROM faces WHERE asset_id=? AND manual=0 AND person_id IS NULL", (aid,))
+                    db.ex("DELETE FROM faces WHERE asset_id=? AND manual=0 AND person_id IS NULL AND rejected=0", (aid,))
                 except Exception:
                     pass
                 db.ex("UPDATE assets SET face_status=-1, error=? WHERE id=?", (f"Face finding failed: {type(e).__name__}: {e}"[:300], aid))
@@ -488,11 +516,52 @@ class Worker:
             for start in range(0, len(ids), 500):
                 part = ids[start:start + 500]
                 marks = ",".join("?" * len(part))
-                db.ex(f"DELETE FROM faces WHERE asset_id IN ({marks}) AND manual=0 AND person_id IS NULL", part)
+                db.ex(f"DELETE FROM faces WHERE asset_id IN ({marks}) AND manual=0 AND person_id IS NULL AND rejected=0", part)
                 db.ex(f"UPDATE assets SET face_status=0, error=NULL WHERE id IN ({marks})", part)
             activity([("faces", "info", f"Looking again at {len(ids):,} photos where face finding was interrupted by a group change")])
         except Exception as e:
             log.exception("Repairing face failures failed: %s", e)
+
+    def remove_duplicate_faces(self) -> None:
+        """Once: faces that were found again on the same spot of the same photo show
+        up twice (for example "Madison" and a second "Who is this?"). Keep the best
+        one (drawn by hand, then confirmed, then named) and remove the extra copies."""
+        try:
+            if db.val("SELECT value FROM meta WHERE key='dup_faces_cleaned'", default=None) == "2":
+                return
+            db.ex("INSERT INTO meta(key, value) VALUES ('dup_faces_cleaned', '2') ON CONFLICT(key) DO UPDATE SET value='2'")
+            rows = db.q("SELECT f.id, f.asset_id, f.person_id, f.manual, f.confirmed, (p.name IS NOT NULL) AS named, "
+                        "f.x1, f.y1, f.x2, f.y2 FROM faces f LEFT JOIN persons p ON p.id=f.person_id "
+                        "WHERE f.rejected=0 AND f.asset_id IN (SELECT asset_id FROM faces WHERE rejected=0 "
+                        "GROUP BY asset_id HAVING COUNT(*) > 1) ORDER BY f.asset_id")
+            by_asset = {}
+            for r in rows:
+                by_asset.setdefault(r["asset_id"], []).append(r)
+            gone, touched = [], set()
+            for faces in by_asset.values():
+                # best first: hand-drawn, confirmed, named, then the oldest
+                faces.sort(key=lambda r: (-r["manual"], -r["confirmed"], -r["named"], r["id"]))
+                kept = []
+                for r in faces:
+                    box = (r["x1"], r["y1"], r["x2"], r["y2"])
+                    if any(_overlap(box, kb) >= 0.35 for kb in kept) and not r["manual"] and not r["confirmed"]:
+                        gone.append(r["id"])
+                        if r["person_id"]:
+                            touched.add(r["person_id"])
+                    else:
+                        kept.append(box)
+            for start in range(0, len(gone), 500):
+                part = gone[start:start + 500]
+                db.ex(f"DELETE FROM faces WHERE id IN ({','.join('?' * len(part))})", part)
+            for pid in touched:
+                try:
+                    cluster.recompute_person(pid)
+                except Exception:
+                    pass
+            if gone:
+                activity([("faces", "info", f"Removed {len(gone):,} duplicate faces (the same face listed twice on one photo)")])
+        except Exception as e:
+            log.exception("Cleaning up duplicate faces failed: %s", e)
 
     def upgrade_regroup(self) -> None:
         """Runs once after updating to the better grouping method."""
@@ -629,6 +698,7 @@ class Worker:
         set_status("worker", "running", "Started")
         cleanup.mark_interrupted()
         self.repair_face_failures()
+        self.remove_duplicate_faces()
         self.upgrade_regroup()
         try:
             n = scanner.pair_live_photos()

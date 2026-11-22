@@ -182,7 +182,10 @@ main.content{flex:1 1 auto;min-width:0;padding:20px 28px 60px}
 .facegrid .f::before{content:"";display:block;padding-top:100%}
 .facegrid .f img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
 .facegrid-scroll{max-height:60vh;overflow-y:auto;overscroll-behavior:contain;padding-right:4px}
-.facegrid .f.sel{outline:3px solid var(--red);outline-offset:-3px}
+.facegrid .f.sel::after{content:"✓";position:absolute;inset:0;z-index:2;border:4px solid var(--accent);border-radius:12px;
+  background:rgba(124,158,255,.22);color:#fff;font:700 18px/1 system-ui,sans-serif;display:flex;align-items:flex-end;justify-content:flex-start;
+  padding:8px;text-shadow:0 1px 3px rgba(0,0,0,.8);pointer-events:none}
+.facegrid .f .x{z-index:3}
 .facegrid .f .x{position:absolute;top:6px;right:6px;width:26px;height:26px;border-radius:50%;background:rgba(0,0,0,.6);border:0;color:#fff;display:flex;align-items:center;justify-content:center}
 
 /* ---------- viewer ---------- */

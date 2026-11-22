@@ -86,7 +86,8 @@ def scan_library(lib, progress=None, on_folder=None, should_stop=None) -> dict:
             db.exmany("UPDATE assets SET size=?, mtime=?, meta_status=0, face_status=0, quick_hash=NULL, full_hash=NULL, "
                       "thumb_ver=thumb_ver+1 WHERE id=?", batch_changed)
             for _, _, aid in batch_changed:
-                db.ex("DELETE FROM faces WHERE asset_id=? AND manual=0 AND confirmed=0", (aid,))
+                # changed file: look for faces again, but remember which ones were removed
+                db.ex("DELETE FROM faces WHERE asset_id=? AND manual=0 AND confirmed=0 AND rejected=0", (aid,))
             batch_changed.clear()
 
     for rel, size, mtime in _walk(root, stats, on_folder, should_stop):

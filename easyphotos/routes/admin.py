@@ -218,7 +218,7 @@ def browse(path: str = "", user: User = Depends(admin_user)):
 
 # ------------------------------------------------------------ jobs
 
-JOB_NAMES = {"forget_names", "scan", "stop_scan", "find_faces", "rescan_faces", "recluster", "rebuild_thumbs", "duplicates", "refresh_places"}
+JOB_NAMES = {"forget_names", "scan", "stop_scan", "find_faces", "rescan_faces", "find_all_faces_again", "recluster", "rebuild_thumbs", "duplicates", "refresh_places"}
 
 
 @router.get("/jobs")
