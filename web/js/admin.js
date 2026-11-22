@@ -513,6 +513,7 @@ export async function duplicates(el, p, q) {
   let kind = q.kind || 'exact', autoPicked = false, offset = 0, counts = {};
   const groups = new Map(); // id -> { g, keep, sec, checkbox }
   const selected = new Set();
+  let selectAll = false; // set by "Select all shown", kept for groups loaded later
   const tabs = h('div', { class: 'tabs' });
   const allBar = h('div', { class: 'row', style: { marginTop: '14px' } });
   const list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '18px', marginTop: '14px' } });
@@ -525,14 +526,18 @@ export async function duplicates(el, p, q) {
   const openCount = () => kind === 'kept' ? (counts['exact:kept'] || 0) + (counts['similar:kept'] || 0) : (counts[`${kind}:open`] || 0);
 
   async function load(reset = true) {
-    if (reset) { offset = 0; groups.clear(); selected.clear(); list.innerHTML = ''; }
+    if (reset) { offset = 0; groups.clear(); selected.clear(); selectAll = false; list.innerHTML = ''; }
     let r;
     try { r = await api(`/api/admin/duplicates?kind=${kind === 'kept' ? 'exact' : kind}&status=${kind === 'kept' ? 'kept' : 'open'}&limit=30&offset=${offset}`); } catch (e) { return errToast(e); }
     counts = r.counts;
     if (!q.kind && !autoPicked && kind === 'exact' && !counts['exact:open'] && counts['similar:open']) { autoPicked = true; kind = 'similar'; return load(); }
     offset += r.groups.length;
     if (!r.groups.length && !groups.size) list.append(h('div', { class: 'empty' }, icon('dup'), kind === 'kept' ? 'No groups marked “keep both”.' : 'No duplicates found.'));
-    r.groups.forEach(g => list.append(group(g)));
+    r.groups.forEach(g => {
+      list.append(group(g));
+      // after "Select all", groups that "Show more" brings in are ticked too
+      if (selectAll && kind !== 'kept') { const x = groups.get(g.id); selected.add(g.id); x.checkbox.checked = true; }
+    });
     drawTabs();
     more.innerHTML = '';
     if (r.groups.length === 30) more.append(h('button', { class: 'btn', onclick: () => load(false) }, 'Show more'));
@@ -546,7 +551,7 @@ export async function duplicates(el, p, q) {
     allBar.innerHTML = '';
     if (kind === 'kept' || !openCount()) return;
     allBar.append(
-      h('button', { class: 'btn small', onclick: () => { groups.forEach((x, id) => { selected.add(id); x.checkbox.checked = true; }); drawSel(); } }, `Select all shown (${groups.size})`),
+      h('button', { class: 'btn small', onclick: () => { selectAll = true; groups.forEach((x, id) => { selected.add(id); x.checkbox.checked = true; }); drawSel(); } }, `Select all shown (${groups.size})`),
       kind === 'exact' && state.allowDelete ? h('button', { class: 'btn small warn', onclick: () => doAll() }, `Delete extra copies in all ${num(openCount())} groups…`) : null,
       h('span', { class: 'hint' }, kind === 'similar' ? '“Look the same” are resized or re-saved copies. Check them by eye before deleting.' : 'Exact copies are byte-for-byte identical files.'));
   }
@@ -560,7 +565,7 @@ export async function duplicates(el, p, q) {
       h('button', { class: 'btn small primary', onclick: () => doSelected('hide') }, 'Hide extra copies'),
       state.allowDelete ? h('button', { class: 'btn small warn', onclick: () => doSelected('delete') }, 'Delete extra copies…') : null,
       h('button', { class: 'btn small ghost', onclick: () => doSelected('keep_both') }, 'Keep both'),
-      h('button', { class: 'btn small ghost', onclick: () => { selected.clear(); groups.forEach(x => { x.checkbox.checked = false; }); drawSel(); } }, 'Clear'));
+      h('button', { class: 'btn small ghost', onclick: () => { selectAll = false; selected.clear(); groups.forEach(x => { x.checkbox.checked = false; }); drawSel(); } }, 'Clear'));
   }
 
   async function doSelected(action) {
