@@ -378,8 +378,10 @@ export async function more(el) {
 
 // Lets the admin pick which face is shown as this person's picture.
 export async function chooseCover(personId, name, after) {
-  const grid = h('div', { class: 'facegrid', style: { maxHeight: '60vh', overflowY: 'auto' } });
-  const more = h('div', { style: { textAlign: 'center' } });
+  const grid = h('div', { class: 'facegrid' });
+  // the box scrolls, not the grid itself (a grid with a height limit gets squashed in some browsers)
+  const more = h('div', { style: { textAlign: 'center', padding: '12px 0 4px' } });
+  const scroller = h('div', { class: 'facegrid-scroll' }, grid, more);
   let offset = 0;
   let m;
   async function load() {
@@ -402,7 +404,7 @@ export async function chooseCover(personId, name, after) {
   m = modal({
     title: `Choose a picture for ${name || 'this person'}`, wide: true,
     body: h('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } },
-      h('span', { class: 'hint' }, 'Tap the face you want to show on the People page. The clearest faces are first.'), grid, more),
+      h('span', { class: 'hint' }, 'Tap the face you want to show on the People page. The clearest faces are first.'), scroller),
   });
   load().catch(errToast);
 }

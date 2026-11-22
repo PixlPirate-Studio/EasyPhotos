@@ -482,7 +482,7 @@ export async function faceGroup(el, p) {
   ].filter(Boolean)), bar, grid);
   const drawBar = () => {
     bar.innerHTML = '';
-    if (!sel.size) { bar.append(h('span', { class: 'hint' }, 'Select faces to move them to someone else, mark them as “not a face”, or pick one as their picture.')); return; }
+    if (!sel.size) { bar.append(h('span', { class: 'hint' }, 'Select faces to move them to someone else, remove them from face matching, or pick one as their picture.')); return; }
     bar.append(h('b', {}, `${sel.size} selected`),
       sel.size === 1 ? h('button', { class: 'btn small', onclick: async () => {
         try { await api(`/api/people/${p.id}`, { method: 'PATCH', body: { cover_face_id: [...sel][0] } }); toast('Picture updated.'); sel.clear(); grid.querySelectorAll('.f.sel').forEach(x => x.classList.remove('sel')); drawBar(); }

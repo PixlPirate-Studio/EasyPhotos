@@ -176,9 +176,12 @@ main.content{flex:1 1 auto;min-width:0;padding:20px 28px 60px}
 .fcard .samples{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px}
 .fcard .samples img{width:100%;aspect-ratio:1;border-radius:8px;object-fit:cover;background:#2A2F3A}
 .fcard .suggest-line{font-size:12px;color:var(--orange)}
-.facegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px}
-.facegrid .f{position:relative;border-radius:12px;overflow:hidden;background:#2A2F3A;aspect-ratio:1;cursor:pointer}
-.facegrid .f img{width:100%;height:100%;object-fit:cover}
+.facegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));grid-auto-rows:auto;align-content:start;gap:10px}
+/* square tiles: the spacer keeps them square in every browser (no reliance on aspect-ratio) */
+.facegrid .f{position:relative;display:block;width:100%;height:auto;min-height:0;border-radius:12px;overflow:hidden;background:#2A2F3A;cursor:pointer;padding:0;border:0}
+.facegrid .f::before{content:"";display:block;padding-top:100%}
+.facegrid .f img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.facegrid-scroll{max-height:60vh;overflow-y:auto;overscroll-behavior:contain;padding-right:4px}
 .facegrid .f.sel{outline:3px solid var(--red);outline-offset:-3px}
 .facegrid .f .x{position:absolute;top:6px;right:6px;width:26px;height:26px;border-radius:50%;background:rgba(0,0,0,.6);border:0;color:#fff;display:flex;align-items:center;justify-content:center}
 
