@@ -65,6 +65,13 @@ def build_filter(user: User, p: dict):
     if str(p.get("favorites", "")) == "1":
         where.append("a.id IN (SELECT asset_id FROM favorites WHERE user_id=?)")
         args.append(user.id)
+    if p.get("smart"):  # smart search: photos that look like the words
+        from .. import clip, settings
+        ids = clip.matching_ids(p["smart"]) if settings.get("smart_search_enabled") and clip.available() else []
+        if ids:
+            where.append(f"a.id IN ({','.join(str(int(i)) for i in ids)})")
+        else:
+            where.append("0")
     if user.is_admin and p.get("blurry"):  # blurry photo finder: very | blurry | soft
         from ..quality import LEVELS
         where.append("a.kind='image' AND a.quality_ok=0 AND a.is_live_part=0 AND a.sharpness < ?")

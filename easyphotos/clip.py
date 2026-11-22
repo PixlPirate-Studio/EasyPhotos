@@ -159,3 +159,21 @@ def search(text: str, limit: int = 1000, matches_only: bool = True):
         mean, sd = float(sims.mean()), float(sims.std()) or 1e-6
         order = [i for i in order if (sims[i] - mean) / sd >= MIN_STANDOUT and sims[i] >= 0.2]
     return [(int(INDEX.ids[i]), float(sims[i])) for i in order]
+
+
+_match_cache: dict = {}
+
+
+def matching_ids(text: str) -> list:
+    """Photo ids that match the words, best first (kept for 5 minutes so paging,
+    "Select all" and date headers all see the same list)."""
+    key = (text or "").strip().lower()[:200]
+    if not key:
+        return []
+    hit = _match_cache.get(key)
+    if hit is None or time.time() - hit[0] > 300:
+        if len(_match_cache) > 50:
+            _match_cache.clear()
+        hit = (time.time(), [i for i, _ in search(key, limit=1500)])
+        _match_cache[key] = hit
+    return hit[1]

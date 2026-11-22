@@ -329,37 +329,29 @@ export async function favorites(el) {
 export async function search(el, p, q) {
   const text = q.q || '';
   el.append(head(`Results for “${text}”`));
-  // Smart results: photos that look like the words, best match first
   const smart = h('section', { class: 'smart-results' });
   const words = h('section', {});
   el.append(smart, words);
-  let items = [], offset = 0, total = 0;
-  const tiles = h('div', { class: 'smart-grid' });
-  const more = h('div', { style: { textAlign: 'center', padding: '12px' } });
-  async function loadSmart() {
-    let r;
-    try { r = await api(`/api/search/smart?q=${encodeURIComponent(text)}&offset=${offset}&limit=120`); } catch (e) { return; }
-    if (!r.enabled) return;
-    if (!offset) {
-      smart.innerHTML = '';
-      total = r.total;
-      smart.append(h('h3', { class: 'section-title' }, 'Looks like “', text, '”', h('span', { class: 'hint', style: { fontWeight: 400, marginLeft: '8px' } }, total ? `${num(total)} · best matches first` : '')));
+  let smartGrid = null;
+  // Smart results: photos that look like the words. Same grid as everywhere else,
+  // so selecting (circle, date, Select all) and deleting work the usual way.
+  try {
+    const r = await api(`/api/search/smart?q=${encodeURIComponent(text)}&limit=0`);
+    if (r.enabled) {
+      smart.append(h('h3', { class: 'section-title' }, 'Looks like “', text, '”',
+        h('span', { class: 'hint', style: { fontWeight: 400, marginLeft: '8px' } }, r.total ? `${num(r.total)} photo${r.total === 1 ? '' : 's'}` : '')));
       if (r.left) smart.append(h('div', { class: 'hint', style: { marginBottom: '8px' } }, `Smart search is still looking at your photos (${num(r.left)} to go), so more may show up later.`));
-      if (!total) smart.append(h('div', { class: 'hint', style: { padding: '6px 0 14px' } }, r.ready ? 'No photos look like that.' : 'Smart search isn’t ready yet. It starts after faces are found.'));
-      smart.append(tiles, more);
+      if (!r.total) smart.append(h('div', { class: 'hint', style: { padding: '6px 0 14px' } }, r.ready ? 'No photos look like that.' : 'Smart search isn’t ready yet. It starts after faces are found.'));
+      else {
+        smartGrid = new PhotoGrid({ query: { smart: text }, emptyText: 'No photos look like that.' });
+        smartGrid.mount(smart);
+      }
     }
-    const start = items.length;
-    items.push(...r.items);
-    r.items.forEach((it, i) => tiles.append(h('button', { class: 'smart-tile', 'aria-label': 'Open photo', onclick: () => openViewer({ items, index: start + i }) },
-      h('img', { src: thumbUrl(it.id, it.v), alt: '', loading: 'lazy', decoding: 'async' }),
-      it.k === 'v' ? h('span', { class: 'dur' }, icon('play')) : null)));
-    offset += r.items.length;
-    more.innerHTML = '';
-    if (offset < total) more.append(h('button', { class: 'btn small', onclick: loadSmart }, `Show more (${num(total - offset)} left)`));
-  }
-  loadSmart();
+  } catch (e) { /* smart search unavailable: just show the name matches */ }
   words.append(h('h3', { class: 'section-title', style: { marginTop: '18px' } }, 'Matching names, places, tags and file names'));
-  return gridPage(words, { q: text }, { emptyText: 'Nothing with that name, place, tag or file name.' });
+  const cleanup = await gridPage(words, { q: text }, { emptyText: 'Nothing with that name, place, tag or file name.' });
+  if (smartGrid) state.activeGrid = smartGrid; // photos opened from the address use the smart list first
+  return () => { if (smartGrid) smartGrid.destroy(); if (typeof cleanup === 'function') cleanup(); };
 }
 
 export async function more(el) {

@@ -551,9 +551,6 @@ def delete_album(album_id: int, user: User = Depends(admin_user)):
 
 # ------------------------------------------------------------ search suggestions
 
-_smart_cache: dict = {}
-
-
 @router.get("/search/smart")
 def smart_search(q: str, offset: int = 0, limit: int = 120, user: User = Depends(current_user)):
     """Photos that look like the words ("fireworks", "kids at the beach"), best first."""
@@ -564,17 +561,9 @@ def smart_search(q: str, offset: int = 0, limit: int = 120, user: User = Depends
     base = {"enabled": bool(settings.get("smart_search_enabled")) and clip.available(), "ready": ready, "left": left}
     if not q or not base["enabled"] or not ready:
         return {**base, "items": [], "total": 0}
-    key = q.lower()
-    hit = _smart_cache.get(key)
-    if hit is None or time.time() - hit[0] > 300:
-        found = clip.search(q, limit=1500)  # real matches only, best first
-        if len(_smart_cache) > 50:
-            _smart_cache.clear()
-        hit = (time.time(), found)
-        _smart_cache[key] = hit
-    found = hit[1]
-    allowed = set(visible_ids(user, [i for i, _ in found]))
-    ids = [i for i, _ in found if i in allowed]
+    found = clip.matching_ids(q)  # real matches only, best first
+    allowed = set(visible_ids(user, found))
+    ids = [i for i in found if i in allowed]
     page = ids[offset:offset + limit]
     rows = {}
     if page:
