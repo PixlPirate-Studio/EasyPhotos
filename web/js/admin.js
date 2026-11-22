@@ -598,7 +598,7 @@ export async function duplicates(el, p, q) {
       g.members.forEach(m => {
         const isKeep = m.id === entry.keep;
         const gone = !entry.keep;
-        copies.append(h('div', { class: 'dupcopy' + (isKeep ? ' keep' : '') + (gone ? ' gone' : ''), onclick: () => { entry.keep = m.id; draw(); drawButtons(); }, role: 'radio', 'aria-checked': isKeep ? 'true' : 'false', tabindex: 0 },
+        copies.append(h('div', { class: 'dupcopy' + (isKeep ? ' keep' : '') + (gone ? ' gone' : ''), onclick: () => { entry.keep = m.id; draw(); drawButtons(); pick(); }, role: 'radio', 'aria-checked': isKeep ? 'true' : 'false', tabindex: 0 },
           h('div', { class: 'img' }, img(thumbUrl(m.id, m.thumb_ver)), h('span', { class: 'tag' }, gone ? 'Will be deleted' : isKeep ? (m.id === g.suggest_keep ? 'Keep (suggested)' : 'Keep') : 'Extra copy')),
           h('div', { class: 'mono muted', style: { wordBreak: 'break-all' } }, `${m.library} / ${m.path}`),
           h('div', { style: { fontSize: '13px', color: 'var(--text2)' } }, `${m.width || '?'} × ${m.height || '?'} · ${fmtBytes(m.size)}`),
@@ -606,6 +606,11 @@ export async function duplicates(el, p, q) {
       });
     };
     draw();
+    // Choosing what to keep (or Delete all) also ticks the group, ready for the bar at the bottom.
+    function pick() {
+      if (kind === 'kept' || selected.has(g.id)) return;
+      selected.add(g.id); cb.checked = true; drawSel();
+    }
     const cb = h('input', { type: 'checkbox', 'aria-label': 'Select this group', style: { width: '22px', height: '22px', accentColor: 'var(--accent)' },
       onchange: () => { cb.checked ? selected.add(g.id) : selected.delete(g.id); drawSel(); } });
     entry.checkbox = cb;
@@ -644,8 +649,7 @@ export async function duplicates(el, p, q) {
         } }, `Delete extra cop${others() > 1 ? 'ies' : 'y'}`) : null,
         h('button', { class: 'btn small ghost', onclick: async () => { await post(`/api/admin/duplicates/${g.id}`, { action: 'keep_both' }); toast(g.members.length === 2 ? 'Kept both.' : 'Kept all.'); done(); } }, `Keep ${both}`),
         state.allowDelete ? h('button', { class: 'btn small ghost danger-text', onclick: () => {
-          entry.keep = 0; draw(); drawButtons();
-          if (!selected.has(g.id)) { selected.add(g.id); cb.checked = true; drawSel(); }
+          entry.keep = 0; draw(); drawButtons(); pick();
         } }, `Delete ${both}`) : null,
         h('button', { class: 'btn small ghost', style: { marginLeft: 'auto' }, onclick: done }, 'Skip'));
     }
