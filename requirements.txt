@@ -9,3 +9,4 @@ opencv-python-headless==5.0.0.93
 sqlcipher3-binary==0.6.0
 zipstream-ng==1.9.3
 python-multipart==0.0.32
+tokenizers==0.23.3

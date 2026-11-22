@@ -496,6 +496,39 @@ def delete_album(album_id: int, user: User = Depends(admin_user)):
 
 # ------------------------------------------------------------ search suggestions
 
+_smart_cache: dict = {}
+
+
+@router.get("/search/smart")
+def smart_search(q: str, offset: int = 0, limit: int = 120, user: User = Depends(current_user)):
+    """Photos that look like the words ("fireworks", "kids at the beach"), best first."""
+    from .. import clip, settings
+    q = (q or "").strip()[:200]
+    ready = db.val("SELECT COUNT(*) FROM clip_embeddings", default=0)
+    left = db.val("SELECT COUNT(*) FROM assets WHERE clip_status=0 AND meta_status=1 AND is_live_part=0 AND deleted_at IS NULL", default=0)
+    base = {"enabled": bool(settings.get("smart_search_enabled")) and clip.available(), "ready": ready, "left": left}
+    if not q or not base["enabled"] or not ready:
+        return {**base, "items": [], "total": 0}
+    key = q.lower()
+    hit = _smart_cache.get(key)
+    if hit is None or time.time() - hit[0] > 300:
+        found = clip.search(q, limit=1500)  # real matches only, best first
+        if len(_smart_cache) > 50:
+            _smart_cache.clear()
+        hit = (time.time(), found)
+        _smart_cache[key] = hit
+    found = hit[1]
+    allowed = set(visible_ids(user, [i for i, _ in found]))
+    ids = [i for i, _ in found if i in allowed]
+    page = ids[offset:offset + limit]
+    rows = {}
+    if page:
+        rows = {r["id"]: r for r in db.q(f"SELECT a.* FROM assets a WHERE a.id IN ({','.join('?' * len(page))}) "
+                                         f"AND a.is_live_part=0 AND a.meta_status=1" + ("" if user.is_admin else " AND a.hidden=0"), page)}
+    favs = _favs(user, list(rows))
+    return {**base, "items": [_item(rows[i], favs) for i in page if i in rows], "total": len(ids)}
+
+
 @router.get("/search/suggest")
 def suggest(q: str = "", user: User = Depends(current_user)):
     q = q.strip()

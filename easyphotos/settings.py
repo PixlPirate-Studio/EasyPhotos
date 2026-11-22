@@ -35,6 +35,7 @@ DEFAULTS = {
     "duplicates_enabled": True,
     "quality_enabled": True,
     "faces_favorites_only": False,
+    "smart_search_enabled": True,
     "places_enabled": True,
     "xmp_enabled": False,
     "video_compat": True,

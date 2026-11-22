@@ -25,6 +25,15 @@ RUN mkdir -p /models/detection /models/recognition \
       && mv /tmp/b/det_10g.onnx /models/detection/model.onnx \
       && mv /tmp/b/w600k_r50.onnx /models/recognition/model.onnx ) \
     && ls -la /models/*/
+# Smart search model (CLIP ViT-B/32 by OpenAI, the same one Immich uses by default).
+# If it can't be downloaded the build still works; smart search just stays off.
+RUN mkdir -p /models/clip/visual /models/clip/textual \
+    && base=https://huggingface.co/immich-app/ViT-B-32__openai/resolve/main \
+    && ( curl -fL --retry 5 -o /models/clip/visual/model.onnx $base/visual/model.onnx \
+      && curl -fL --retry 5 -o /models/clip/textual/model.onnx $base/textual/model.onnx \
+      && curl -fL --retry 5 -o /models/clip/textual/tokenizer.json $base/textual/tokenizer.json \
+      || (echo "Smart search model could not be downloaded; smart search will be off" && rm -rf /models/clip) ) \
+    && ls -la /models/clip/* 2>/dev/null || true
 
 # The app
 FROM python:3.13-slim

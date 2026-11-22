@@ -106,6 +106,16 @@ export async function library(el) {
         h('div', { class: 'hint' }, 'Not started. Click “Find faces” to look through every photo. It can take a day or more on a big library and won’t slow down your other apps.'),
         h('div', {}, h('button', { class: 'btn small primary', onclick: findFaces }, icon('scan'), 'Find faces'))]));
     }
+    // Step 4: smart search
+    if (j.smart_enabled) {
+      const sTotal = c.smart_done + c.smart_pending;
+      const spct = sTotal ? Math.floor(c.smart_done / sTotal * 100) : 0;
+      card.append(step(4, 'Getting ready for smart search', c.smart_pending ? 'busy' : 'done', [
+        h('div', {}, h('b', {}, num(c.smart_done)), ` of ${num(sTotal)} photos and videos ready`,
+          c.smart_pending && c.faces_pending ? h('span', { class: 'hint' }, ' · starts after faces') : null),
+        h('div', { class: 'progress' }, h('div', { style: { width: `${spct}%` } })),
+        h('div', { class: 'hint' }, 'Lets you search for things like “fireworks” or “beach” without tagging. Photos can be found as soon as they’re ready.')]));
+    }
     const chip = (text) => h('span', { class: 'badge green', style: { padding: '6px 12px', fontWeight: 500, fontSize: '13px' } }, text);
     card.append(h('div', { class: 'row', style: { paddingTop: '12px', borderTop: '1px solid var(--line)', gap: '10px' } },
       chip(`Uses ${j.threads} of ${j.cpus} threads at lowest priority`),
@@ -1304,6 +1314,7 @@ export async function settings(el) {
       h('div', { class: 'optgrid' },
         chk('duplicates_enabled', 'Duplicate finder', 'Spots copies while making thumbnails. Never deletes on its own.'),
         chk('faces_favorites_only', 'Only look for favorite people', 'Faces only asks about groups that look like people you starred, and new photos are only matched to them. Nobody else is deleted; turn this off to see everyone again.'),
+        chk('smart_search_enabled', 'Smart search', 'Find photos by what’s in them, like “fireworks” or “kids at the beach”, without tagging. Looks at each photo once in the background (about 4–6 hours for 80,000 photos). Turning it off stops that and hides smart results.'),
         chk('quality_enabled', 'Blurry photo finder', 'Checks each photo for blur and darkness in the background (quick). Never deletes on its own.'),
         chk('places_enabled', 'Place names (offline)', 'Turns GPS into “Whiteland, Indiana” with a built-in town list. No internet.'),
         chk('xmp_enabled', 'Save names, tags and descriptions to .xmp files', 'Small file next to each photo so your work goes with you to any app. Needs Read/Write access.'),

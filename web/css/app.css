@@ -331,3 +331,10 @@ main.content{flex:1 1 auto;min-width:0;padding:20px 28px 60px}
 .toast{display:flex;align-items:center;gap:12px}
 .toast-act{background:none;border:0;color:var(--accent);font-weight:700;font-size:inherit;cursor:pointer;padding:4px 2px;margin-left:auto}
 .fav-star{color:#F5C451}
+.smart-results .section-title, h3.section-title{font-size:16px;margin:4px 0 10px;display:flex;align-items:baseline;flex-wrap:wrap}
+.smart-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:4px}
+@media (max-width:700px){.smart-grid{grid-template-columns:repeat(3,1fr);gap:2px}}
+.smart-tile{position:relative;aspect-ratio:1;border:0;padding:0;background:var(--bg2,#1a1d24);overflow:hidden;cursor:pointer;border-radius:4px}
+.smart-tile img{width:100%;height:100%;object-fit:cover;display:block}
+.smart-tile .dur{position:absolute;right:6px;bottom:6px;color:#fff;filter:drop-shadow(0 1px 2px rgba(0,0,0,.7))}
+.smart-tile .dur svg{width:16px;height:16px}

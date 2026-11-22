@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from .. import cleanup, config, db, emptydirs, otherfiles, quality, recycle, settings
+from .. import cleanup, clip, config, db, emptydirs, otherfiles, quality, recycle, settings
 from ..security import ROLES, User, admin_user, audit
 from .common import ids_param
 
@@ -230,7 +230,9 @@ def jobs(user: User = Depends(admin_user)):
         "SUM(CASE WHEN meta_status=-1 THEN 1 ELSE 0 END) AS meta_errors, "
         "SUM(CASE WHEN kind='image' AND is_live_part=0 THEN 1 ELSE 0 END) AS images, "
         "SUM(CASE WHEN (face_status=0 AND meta_status<>-1) THEN 1 ELSE 0 END) AS faces_pending, "
-        "SUM(CASE WHEN (face_status IN (1,2,-1) OR meta_status=-1) THEN 1 ELSE 0 END) AS faces_done "
+        "SUM(CASE WHEN (face_status IN (1,2,-1) OR meta_status=-1) THEN 1 ELSE 0 END) AS faces_done, "
+        "SUM(CASE WHEN clip_status=0 AND meta_status=1 AND is_live_part=0 THEN 1 ELSE 0 END) AS smart_pending, "
+        "SUM(CASE WHEN clip_status=1 THEN 1 ELSE 0 END) AS smart_done "
         "FROM assets WHERE deleted_at IS NULL")
     s = settings.get_all()
     face_rate = (st.get("faces") or {}).get("rate")
@@ -255,6 +257,7 @@ def jobs(user: User = Depends(admin_user)):
         "thumbs_rate": thumb_rate, "faces_rate": face_rate,
         "threads": min(s["worker_threads"], os.cpu_count() or 1), "night_threads": min(s["night_threads"], os.cpu_count() or 1),
         "night_boost": s["night_boost"], "cpus": os.cpu_count(),
+        "smart_enabled": bool(s.get("smart_search_enabled")) and clip.available(),
     }
 
 

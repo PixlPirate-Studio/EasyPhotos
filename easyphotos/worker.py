@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PIL import Image
 
-from . import cleanup, cluster, config, db, dupes, media, quality, recycle, scanner, settings, xmp
+from . import cleanup, clip, cluster, config, db, dupes, media, quality, recycle, scanner, settings, xmp
 
 log = logging.getLogger("easyphotos.worker")
 
@@ -30,7 +30,7 @@ def set_status(name: str, state: str, message: str = "", rate=None) -> None:
 
 _act_count = 0
 _log_files = True
-KIND_LABEL = {"quality": "BLUR", "cleanup": "CLEAN", "scan": "SCAN", "thumbs": "THUMB", "faces": "FACES", "duplicates": "DUPES", "command": "ADMIN"}
+KIND_LABEL = {"smart": "SMART", "quality": "BLUR", "cleanup": "CLEAN", "scan": "SCAN", "thumbs": "THUMB", "faces": "FACES", "duplicates": "DUPES", "command": "ADMIN"}
 
 
 def activity(entries) -> None:
@@ -78,6 +78,7 @@ class Worker:
         self.scan_stop = threading.Event()
         self.cleanup_threads = {}
         self.quality_running = False
+        self.clip_running = False
         self._face_batch_ids = []
         self._quality_ids = []
         self.cleanup_stops = {}
@@ -321,6 +322,50 @@ class Worker:
             log.debug("Blur check failed for asset %s: %s", aid, e)
         set_status("quality", "running", f"Checking photos for blur… {len(rows)} more done")
         return True
+
+    def clip_batch(self, s, threads: int) -> bool:
+        """Smart search: looks at each photo and video once (about a quarter
+        second each) so it can later be found by words like "fireworks"."""
+        if not s.get("smart_search_enabled", True) or not clip.available():
+            return False
+        rows = []
+        try:
+            db.ex("UPDATE assets SET clip_status=2 WHERE clip_status=0 AND is_live_part=1 AND meta_status=1")
+            rows = db.q("SELECT id FROM assets WHERE clip_status=0 AND meta_status=1 AND is_live_part=0 AND deleted_at IS NULL "
+                        "ORDER BY taken_ts DESC LIMIT 16")
+            if not rows:
+                if self.clip_running:
+                    self.clip_running = False
+                    n = db.val("SELECT COUNT(*) FROM clip_embeddings", default=0)
+                    activity([("smart", "info", f"Smart search is ready: {n:,} photos and videos can be found by what's in them")])
+                    set_status("smart", "idle", "Done")
+                return False
+            if not self.clip_running:
+                self.clip_running = True
+                left = db.val("SELECT COUNT(*) FROM assets WHERE clip_status=0 AND meta_status=1 AND is_live_part=0 AND deleted_at IS NULL", default=0)
+                activity([("smart", "info", f"Started getting {left:,} photos ready for smart search (about a quarter second each)")])
+            from PIL import Image
+            done, failed = [], []
+            for r in rows:
+                try:
+                    with Image.open(media.thumb_path(r["id"], "p")) as im:
+                        done.append((r["id"], clip.to_blob(clip.embed_image(im, threads))))
+                except Exception as e:
+                    failed.append(r["id"])
+                    log.debug("Smart search skipped asset %s: %s", r["id"], e)
+            with db.tx() as c:
+                c.executemany("INSERT OR REPLACE INTO clip_embeddings(asset_id, emb) VALUES (?, ?)", done)
+                c.executemany("UPDATE assets SET clip_status=1 WHERE id=?", [(i,) for i, _ in done])
+                c.executemany("UPDATE assets SET clip_status=-1 WHERE id=?", [(i,) for i in failed])
+            left = db.val("SELECT COUNT(*) FROM assets WHERE clip_status=0 AND meta_status=1 AND is_live_part=0 AND deleted_at IS NULL", default=0)
+            set_status("smart", "running", f"Getting photos ready for smart search… {left:,} left")
+            return True
+        except Exception as e:
+            # never let smart search hold anything else up
+            log.exception("Smart search step failed: %s", e)
+            if rows:
+                db.ex(f"UPDATE assets SET clip_status=-1 WHERE id IN ({','.join('?' * len(rows))}) AND clip_status=0", [r["id"] for r in rows])
+            return False
 
     def faces_batch(self, s, threads: int) -> bool:
         """Wrapper: if a whole batch fails (not just one photo), mark those photos
@@ -613,6 +658,8 @@ class Worker:
                     did = self.quality_batch(s, threads)
                 if not did:
                     did = self.faces_batch(s, threads)
+                if not did:
+                    did = self.clip_batch(s, threads)
                 if not did:
                     did = self.maybe_dupes(s) or self.maybe_xmp(s)
                 self.daily(s)

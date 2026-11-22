@@ -211,6 +211,12 @@ CREATE TABLE IF NOT EXISTS job_commands (
     created_at REAL NOT NULL
 );
 
+-- Smart search: what each photo looks like, as 512 numbers (CLIP)
+CREATE TABLE IF NOT EXISTS clip_embeddings (
+    asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+    emb BLOB NOT NULL
+);
+
 -- "Not X": these faces are not this named person, so never suggest or join them.
 CREATE TABLE IF NOT EXISTS face_not (
     face_id INTEGER NOT NULL,
@@ -318,6 +324,8 @@ MIGRATIONS = [
     ("assets", "quality_ok", "INTEGER NOT NULL DEFAULT 0"),
     # favorite people: with "Only look for favorite people" on, only they get matched
     ("persons", "favorite", "INTEGER NOT NULL DEFAULT 0"),
+    # smart search: 0 = not looked at yet, 1 = done, 2 = skipped, -1 = failed
+    ("assets", "clip_status", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -329,6 +337,7 @@ def init() -> None:
         if col not in cols:
             c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
     c.execute("CREATE INDEX IF NOT EXISTS idx_assets_quality ON assets(quality_status)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_assets_clip ON assets(clip_status)")
     c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
     c.commit()
 
