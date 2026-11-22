@@ -51,13 +51,12 @@ export async function people(el, p, q) {
   const showHidden = q && q.hidden === '1';
   let editing = false;
   const list = await api(`/api/people${showHidden ? '?mine_hidden=1' : ''}`);
-  const hiddenCount = showHidden ? list.length : (await api('/api/people?mine_hidden=1').catch(() => [])).length;
   const grid = h('div', { class: 'pgrid' });
   const editBtn = h('button', { class: 'btn', onclick: () => { editing = !editing; editBtn.classList.toggle('primary', editing); editBtn.lastChild.textContent = editing ? 'Done' : 'Choose who shows'; draw(); } },
     icon('eyeoff'), h('span', {}, 'Choose who shows'));
-  el.append(head(showHidden ? 'Hidden from my People' : 'People',
-    showHidden ? 'Only you don’t see these. Tap the eye to bring someone back.' : (list.length ? `${num(list.length)} named` : null),
-    [showHidden ? h('a', { class: 'btn', href: '#/people' }, icon('back'), 'Back to People') : (list.length ? editBtn : null),
+  el.append(head(showHidden ? 'Hidden people' : 'People',
+    showHidden ? 'People you hid from your People page. Only your account is affected. Tap the eye to bring someone back.' : (list.length ? `${num(list.length)} named` : null),
+    [showHidden ? h('a', { class: 'btn', href: '#/settings/me' }, icon('back'), 'Back to settings') : (list.length ? editBtn : null),
       state.user.is_admin && !showHidden ? h('a', { class: 'btn', href: '#/admin/faces' }, icon('scan'), 'Name faces') : null]));
   if (!list.length) {
     el.append(h('div', { class: 'empty' }, icon('people'),
@@ -70,7 +69,7 @@ export async function people(el, p, q) {
       await api(`/api/people/${person.id}/hide-for-me`, { method: 'POST', body: { hidden: hide } });
       person.hidden_for_me = hide;
       card.remove();
-      toast(hide ? `${person.name} won’t show on your People page.` : `${person.name} is back on your People page.`, false,
+      toast(hide ? `${person.name} won’t show on your People page. Bring them back any time in Settings → Hidden people.` : `${person.name} is back on your People page.`, false,
         { label: 'Undo', run: async () => { await api(`/api/people/${person.id}/hide-for-me`, { method: 'POST', body: { hidden: !hide } }); go(location.hash); } });
     } catch (e) { errToast(e); }
   };
@@ -90,10 +89,16 @@ export async function people(el, p, q) {
   }
   draw();
   el.append(grid);
-  if (!showHidden && hiddenCount) {
-    el.append(h('div', { style: { textAlign: 'center', padding: '20px 0' } },
-      h('a', { href: '#/people?hidden=1', class: 'hint' }, `${num(hiddenCount)} ${hiddenCount === 1 ? 'person' : 'people'} hidden from your People · Show them`)));
-  }
+}
+
+// Settings every account has (the admin's Settings page links here too).
+export async function mySettings(el) {
+  const hidden = await api('/api/people?mine_hidden=1').catch(() => []);
+  const row = (hash, ic, label, hint) => h('a', { class: 'card', href: hash, style: { flexDirection: 'row', alignItems: 'center', padding: '14px 16px', color: 'var(--text)' } },
+    icon(ic), h('div', { class: 'grow' }, h('b', {}, label), hint ? h('div', { class: 'hint' }, hint) : null), icon('next'));
+  el.append(head('My settings', 'These only affect your own account.'),
+    h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
+      row('#/people?hidden=1', 'eyeoff', 'Hidden people', hidden.length ? `${num(hidden.length)} ${hidden.length === 1 ? 'person' : 'people'} hidden from your People page` : 'Nobody hidden. Use “Choose who shows” on the People page to hide someone.')));
 }
 
 export async function person(el, p) {

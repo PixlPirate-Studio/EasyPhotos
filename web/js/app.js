@@ -185,6 +185,7 @@ function accountMenu(anchor) {
   const roleName = { admin: 'Admin', user: 'User (view + download)', viewer: 'Viewer (view only)' }[u.role];
   const menu = h('div', { class: 'menu', role: 'menu' },
     h('div', { class: 'who' }, h('b', {}, u.username), h('div', { class: 'hint' }, roleName)),
+    h('button', { onclick: () => { menu.remove(); go('#/settings/me'); } }, icon('settings'), 'My settings'),
     h('button', { onclick: () => { menu.remove(); changePassword(); } }, icon('lock'), 'Change password'),
     h('button', { onclick: async () => { await api('/api/auth/logout', { method: 'POST' }).catch(() => {}); state.user = null; location.hash = '#/'; loginScreen(); } }, icon('logout'), 'Sign out'));
   document.body.append(menu);
@@ -279,6 +280,7 @@ function adminOnly(fn) {
 function registerRoutes() {
   route('/', view(V.photos));
   route('/people', view(V.people));
+  route('/settings/me', view(V.mySettings));
   route('/people/:id', view(V.person));
   route('/map', view(V.map));
   route('/calendar', view(V.calendar));

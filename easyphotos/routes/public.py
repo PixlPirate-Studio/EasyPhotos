@@ -124,6 +124,9 @@ def _serve(request: Request, row, size: str, no_cache: bool = False):
     headers = {"Cache-Control": "no-store"} if no_cache else {"Cache-Control": "private, max-age=86400"}
     if size in ("thumbnail", "thumb", "preview"):
         p = media.thumb_path(row["id"], "t" if size.startswith("thumb") else "p")
+        if not size.startswith("thumb") and (row["edit_rot"] or row["edit_crop"]):
+            e = media.thumb_path(row["id"], "e")
+            p = e if e.exists() else p
         if not p.exists():
             raise HTTPException(404, "Not ready yet.")
         return FileResponse(p, media_type="image/webp" if p.suffix == ".webp" else "image/jpeg", headers=headers)

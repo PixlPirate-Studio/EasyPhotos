@@ -58,6 +58,42 @@ async function findInGrid(g, photo) {
   return -1;
 }
 
+// Crop & rotate are only instructions; face positions are kept on the original
+// photo. These move a box (0-1) between the original and the edited view.
+function rotPoint(x, y, rot) {
+  if (rot === 90) return [1 - y, x];
+  if (rot === 180) return [1 - x, 1 - y];
+  if (rot === 270) return [y, 1 - x];
+  return [x, y];
+}
+function unrotPoint(X, Y, rot) {
+  if (rot === 90) return [Y, 1 - X];
+  if (rot === 180) return [1 - X, 1 - Y];
+  if (rot === 270) return [1 - Y, X];
+  return [X, Y];
+}
+function toShown(b, edit) {
+  if (!edit || (!edit.rot && !edit.crop)) return b;
+  const [ax, ay] = rotPoint(b.x1, b.y1, edit.rot || 0), [bx, by] = rotPoint(b.x2, b.y2, edit.rot || 0);
+  let x1 = Math.min(ax, bx), y1 = Math.min(ay, by), x2 = Math.max(ax, bx), y2 = Math.max(ay, by);
+  if (edit.crop) {
+    const [cx, cy, cw, ch] = edit.crop;
+    x1 = (x1 - cx) / cw; x2 = (x2 - cx) / cw; y1 = (y1 - cy) / ch; y2 = (y2 - cy) / ch;
+  }
+  return { x1, y1, x2, y2 };
+}
+function toOriginal(b, edit) {
+  if (!edit || (!edit.rot && !edit.crop)) return b;
+  let { x1, y1, x2, y2 } = b;
+  if (edit.crop) {
+    const [cx, cy, cw, ch] = edit.crop;
+    x1 = cx + x1 * cw; x2 = cx + x2 * cw; y1 = cy + y1 * ch; y2 = cy + y2 * ch;
+  }
+  const [ax, ay] = unrotPoint(x1, y1, edit.rot || 0), [bx, by] = unrotPoint(x2, y2, edit.rot || 0);
+  return { x1: Math.min(ax, bx), y1: Math.min(ay, by), x2: Math.max(ax, bx), y2: Math.max(ay, by) };
+}
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+
 class Viewer {
   constructor({ items, index, grid, fromAddress = false }) {
     this.fromAddress = fromAddress;
@@ -148,7 +184,8 @@ class Viewer {
       h('div', { class: 'acts' },
         favBtn,
         it.k !== 'v' ? this.facesBtn : null,
-        u.can_download ? h('button', { class: 'iconbtn', 'aria-label': 'Download original', title: 'Download original', onclick: () => download(`/api/assets/${it.id}/original`) }, icon('down')) : null,
+        u.can_download ? h('button', { class: 'iconbtn', 'aria-label': 'Download', title: 'Download', onclick: () => this.downloadChoice() }, icon('down')) : null,
+        u.is_admin && it.k !== 'v' ? h('button', { class: 'iconbtn', 'aria-label': 'Crop and rotate', title: 'Crop & rotate', onclick: () => this.openCropper() }, icon('crop')) : null,
         u.is_admin ? h('button', { class: 'iconbtn', 'aria-label': 'Edit info and faces', title: 'Edit', onclick: () => { this.mode = 'edit'; this.showInfo = true; this.root.classList.add('info-open'); this.renderSide(); } }, icon('edit')) : null,
         u.is_admin && state.allowDelete ? h('button', { class: 'iconbtn hide-m', 'aria-label': 'Delete', title: 'Delete', onclick: () => this.del() }, icon('trash')) : null,
         h('button', { class: 'iconbtn' + (this.showInfo ? ' on' : ''), 'aria-label': 'Details', title: 'Details (i)', onclick: () => this.toggleInfo() }, icon('info'))));
@@ -246,8 +283,11 @@ class Viewer {
     this.frame.querySelectorAll('.facebox').forEach(b => b.remove());
     if (!this.detail || !this.showFaces || this.item.k === 'v' || !this.imgEl) return;
     for (const f of this.detail.faces) {
+      const sb = toShown(f, this.detail.edit);
+      const x1 = clamp01(sb.x1), y1 = clamp01(sb.y1), x2 = clamp01(sb.x2), y2 = clamp01(sb.y2);
+      if (x2 - x1 < 0.005 || y2 - y1 < 0.005) continue; // cropped out
       const b = h('div', { class: 'facebox' + (f.name ? '' : ' unknown'), style: {
-        left: `${f.x1 * 100}%`, top: `${f.y1 * 100}%`, width: `${(f.x2 - f.x1) * 100}%`, height: `${(f.y2 - f.y1) * 100}%` } },
+        left: `${x1 * 100}%`, top: `${y1 * 100}%`, width: `${(x2 - x1) * 100}%`, height: `${(y2 - y1) * 100}%` } },
         h('span', {}, f.name || (state.user.is_admin ? 'Who is this?' : 'Unknown')));
       if (state.user.is_admin) { b.style.cursor = 'pointer'; b.addEventListener('click', () => this.nameFace(f)); }
       this.frame.append(b);
@@ -407,6 +447,115 @@ class Viewer {
     this.renderSide();
   }
 
+  downloadChoice() {
+    const it = this.item;
+    const ed = this.detail && this.detail.edit;
+    if (!ed || (!ed.rot && !ed.crop)) { download(`/api/assets/${it.id}/original`); return; }
+    const m = modal({ title: 'Download', body: h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
+      h('button', { class: 'btn primary', onclick: () => { m.close(); download(`/api/assets/${it.id}/edited`); } }, icon('crop'), 'Edited copy (cropped / rotated)'),
+      h('button', { class: 'btn', onclick: () => { m.close(); download(`/api/assets/${it.id}/original`); } }, icon('down'), 'Original, exactly as taken')) });
+  }
+
+  // ---- crop & rotate: the photo file is never changed, only instructions are saved
+  async openCropper() {
+    const it = this.item;
+    if (!this.detail) this.detail = await api(`/api/assets/${it.id}`);
+    const start = this.detail.edit || { rot: 0, crop: null };
+    let rot = start.rot || 0;
+    let crop = start.crop ? { x: start.crop[0], y: start.crop[1], w: start.crop[2], h: start.crop[3] } : { x: 0, y: 0, w: 1, h: 1 };
+    const pic = new Image();
+    pic.src = `/api/assets/${it.id}/preview?orig=1&v=${it.v}`;
+    try { await pic.decode(); } catch (e) { toast('Couldn’t load the photo.', true); return; }
+
+    const canvas = h('canvas', { class: 'crop-canvas' });
+    const box = h('div', { class: 'crop-box' }, ...['nw', 'ne', 'sw', 'se'].map(c => h('span', { class: `crop-h ${c}`, 'data-c': c })));
+    const stage = h('div', { class: 'crop-stage' }, h('div', { class: 'crop-wrap' }, canvas, box));
+    const root = h('div', { class: 'cropper', role: 'dialog', 'aria-label': 'Crop and rotate' },
+      h('div', { class: 'crop-top' }, h('b', {}, 'Crop & rotate'), h('span', { class: 'hint' }, 'Your original photo is never changed.')),
+      stage,
+      h('div', { class: 'crop-bar' },
+        h('button', { class: 'btn', onclick: () => turn(-90) }, icon('rotl'), 'Left'),
+        h('button', { class: 'btn', onclick: () => turn(90) }, icon('rotr'), 'Right'),
+        h('button', { class: 'btn ghost', onclick: () => { rot = 0; crop = { x: 0, y: 0, w: 1, h: 1 }; draw(); } }, 'Reset'),
+        h('span', { class: 'grow' }),
+        h('button', { class: 'btn ghost', onclick: () => close() }, 'Cancel'),
+        h('button', { class: 'btn primary', onclick: () => save() }, 'Save')));
+    document.body.append(root);
+    const keys = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('keydown', keys, true);
+    const close = () => { document.removeEventListener('keydown', keys, true); window.removeEventListener('resize', draw); root.remove(); };
+
+    let dispW = 0, dispH = 0;
+    function draw() {
+      const W = pic.naturalWidth, H = pic.naturalHeight;
+      const rw = rot % 180 ? H : W, rh = rot % 180 ? W : H;
+      const r = stage.getBoundingClientRect();
+      const scale = Math.min((r.width - 32) / rw, (r.height - 32) / rh);
+      dispW = Math.max(1, Math.round(rw * scale)); dispH = Math.max(1, Math.round(rh * scale));
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = dispW * dpr; canvas.height = dispH * dpr;
+      canvas.style.width = `${dispW}px`; canvas.style.height = `${dispH}px`;
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.translate(dispW / 2, dispH / 2);
+      ctx.rotate(rot * Math.PI / 180);
+      const dw = (rot % 180 ? dispH : dispW), dh = (rot % 180 ? dispW : dispH);
+      ctx.drawImage(pic, -dw / 2, -dh / 2, dw, dh);
+      place();
+    }
+    function place() {
+      Object.assign(box.style, { left: `${crop.x * dispW}px`, top: `${crop.y * dispH}px`, width: `${crop.w * dispW}px`, height: `${crop.h * dispH}px` });
+    }
+    function turn(d) {
+      // the crop box turns with the photo
+      const c = crop;
+      crop = d > 0 ? { x: 1 - c.y - c.h, y: c.x, w: c.h, h: c.w } : { x: c.y, y: 1 - c.x - c.w, w: c.h, h: c.w };
+      rot = (rot + d + 360) % 360;
+      draw();
+    }
+    // drag the box, or a corner to resize
+    let drag = null;
+    box.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      box.setPointerCapture(e.pointerId);
+      drag = { c: e.target.dataset.c || 'move', x: e.clientX, y: e.clientY, start: { ...crop } };
+    });
+    box.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const dx = (e.clientX - drag.x) / dispW, dy = (e.clientY - drag.y) / dispH, s0 = drag.start, MIN = 0.05;
+      let { x, y, w, h: hh } = s0;
+      if (drag.c === 'move') {
+        x = Math.min(1 - w, Math.max(0, s0.x + dx)); y = Math.min(1 - hh, Math.max(0, s0.y + dy));
+      } else {
+        let x1 = s0.x, y1 = s0.y, x2 = s0.x + s0.w, y2 = s0.y + s0.h;
+        if (drag.c.includes('w')) x1 = Math.min(x2 - MIN, Math.max(0, x1 + dx));
+        if (drag.c.includes('e')) x2 = Math.max(x1 + MIN, Math.min(1, x2 + dx));
+        if (drag.c.includes('n')) y1 = Math.min(y2 - MIN, Math.max(0, y1 + dy));
+        if (drag.c.includes('s')) y2 = Math.max(y1 + MIN, Math.min(1, y2 + dy));
+        x = x1; y = y1; w = x2 - x1; hh = y2 - y1;
+      }
+      crop = { x, y, w, h: hh };
+      place();
+    });
+    const end = () => { drag = null; };
+    box.addEventListener('pointerup', end);
+    box.addEventListener('pointercancel', end);
+
+    const save = async () => {
+      try {
+        const res = await api(`/api/assets/${it.id}/edit`, { method: 'PATCH', body: { rot, crop: [crop.x, crop.y, crop.w, crop.h] } });
+        Object.assign(it, { w: res.item.w, h: res.item.h, v: res.item.v });
+        this.detail.edit = res.edit;
+        close();
+        toast(res.edit.rot || res.edit.crop ? 'Saved. Your original photo wasn’t changed.' : 'Back to the original.');
+        if (this.grid && this.grid.render) this.grid.render();
+        this.show();
+      } catch (e) { errToast(e); }
+    };
+    window.addEventListener('resize', draw);
+    requestAnimationFrame(draw);
+  }
+
   setDrawing(on) {
     this.drawing = on;
     if (!this.media) return;
@@ -445,7 +594,8 @@ class Viewer {
       if (!r || r.x2 - r.x1 < 0.01 || r.y2 - r.y1 < 0.01) { box.remove(); box = null; return; }
       const b = box; box = null;
       this.askName('New face you marked', '', async (name, personId) => {
-        const res = await nameSafely(name, (extra) => api(`/api/assets/${this.item.id}/faces`, { method: 'POST', body: { ...r, name, person_id: personId, ...extra } }));
+        const ro = toOriginal(r, this.detail && this.detail.edit);
+        const res = await nameSafely(name, (extra) => api(`/api/assets/${this.item.id}/faces`, { method: 'POST', body: { ...ro, name, person_id: personId, ...extra } }));
         if (!res) { b.remove(); return; }
         toast('Face added. It also helps EasyPhotos recognise this person.');
         b.remove();

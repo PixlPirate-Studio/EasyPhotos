@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from . import settings
+from . import db, settings
 
 log = logging.getLogger("easyphotos.media")
 
@@ -36,10 +36,12 @@ T_DTO, T_OFFSET_DTO, T_FNUMBER, T_EXPOSURE, T_ISO, T_FOCAL, T_LENS = 36867, 3688
 # ---------------------------------------------------------------- paths
 
 def thumb_path(asset_id: int, kind: str) -> Path:
-    """kind: 't' grid thumbnail, 'p' preview, 'v' compatible video."""
+    """kind: 't' grid thumbnail, 'p' preview (never edited: used for faces, blur
+    and smart search), 'e' edited preview (only for cropped/rotated photos),
+    'v' compatible video."""
     base = settings.thumbs_dir()
     sub = f"{asset_id % 1000:03d}"
-    ext = {"t": None, "p": None, "v": "mp4"}[kind]
+    ext = {"t": None, "p": None, "e": None, "v": "mp4"}[kind]
     if ext is None:
         ext = "webp" if settings.get("thumb_format") == "webp" else "jpg"
     return base / sub / f"{asset_id}_{kind}.{ext}"
@@ -229,7 +231,7 @@ def dhash(img: Image.Image) -> int:
 
 
 def make_image_thumbs(asset_id: int, img: Image.Image) -> int:
-    """Writes preview + grid thumbnail. Returns the dhash."""
+    """Writes preview + grid thumbnail. Returns the dhash (of the unedited photo)."""
     s = settings.get_all()
     q = int(s["thumb_quality"])
     preview = img.copy()
@@ -238,7 +240,75 @@ def make_image_thumbs(asset_id: int, img: Image.Image) -> int:
     thumb = preview.copy()
     thumb.thumbnail((s["thumb_size"], s["thumb_size"]), Image.Resampling.LANCZOS)
     save_image(thumb, thumb_path(asset_id, "t"), q)
-    return dhash(thumb)
+    h = dhash(thumb)
+    r = db.q1("SELECT edit_rot, edit_crop FROM assets WHERE id=?", (asset_id,))
+    if r and (r["edit_rot"] or r["edit_crop"]):
+        make_edited(asset_id, r["edit_rot"], r["edit_crop"])
+    return h
+
+
+# ---------------------------------------------------------------- crop & rotate
+
+def parse_crop(text):
+    """'x,y,w,h' (0-1) -> tuple, or None."""
+    if not text:
+        return None
+    try:
+        x, y, w, h = (float(v) for v in str(text).split(","))
+    except ValueError:
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return x, y, w, h
+
+
+def apply_edit(img: Image.Image, rot: int, crop) -> Image.Image:
+    """Rotate clockwise by rot degrees, then crop (0-1 box measured after rotating)."""
+    rot = int(rot or 0) % 360
+    if rot == 90:
+        img = img.transpose(Image.Transpose.ROTATE_270)  # PIL's ROTATE_270 = 90 degrees clockwise
+    elif rot == 180:
+        img = img.transpose(Image.Transpose.ROTATE_180)
+    elif rot == 270:
+        img = img.transpose(Image.Transpose.ROTATE_90)
+    c = parse_crop(crop) if isinstance(crop, str) or crop is None else crop
+    if c:
+        x, y, w, h = c
+        W, H = img.size
+        box = (max(0, round(x * W)), max(0, round(y * H)), min(W, round((x + w) * W)), min(H, round((y + h) * H)))
+        if box[2] - box[0] >= 2 and box[3] - box[1] >= 2:
+            img = img.crop(box)
+    return img
+
+
+def edited_size(width, height, rot, crop):
+    """Width and height of the photo as shown, after crop & rotate."""
+    w, h = (width or 1), (height or 1)
+    if int(rot or 0) % 180 == 90:
+        w, h = h, w
+    c = parse_crop(crop)
+    if c:
+        w, h = max(1, round(w * c[2])), max(1, round(h * c[3]))
+    return w, h
+
+
+def make_edited(asset_id: int, rot: int, crop) -> None:
+    """Edited preview ('e') + grid thumbnail from the unedited preview. With no
+    edits, puts the plain thumbnail back and removes the edited preview."""
+    s = settings.get_all()
+    q = int(s["thumb_quality"])
+    with Image.open(thumb_path(asset_id, "p")) as src:
+        src.load()
+        base = src.convert("RGB") if src.mode not in ("RGB", "L") else src.copy()
+    if not rot and not parse_crop(crop):
+        thumb_path(asset_id, "e").unlink(missing_ok=True)
+        edited = base
+    else:
+        edited = apply_edit(base, rot, crop)
+        save_image(edited, thumb_path(asset_id, "e"), q)
+    thumb = edited.copy()
+    thumb.thumbnail((s["thumb_size"], s["thumb_size"]), Image.Resampling.LANCZOS)
+    save_image(thumb, thumb_path(asset_id, "t"), q)
 
 
 # ---------------------------------------------------------------- videos
@@ -372,7 +442,7 @@ def compat_video(asset_id: int, src: str) -> Path | None:
 
 
 def remove_derivatives(asset_id: int) -> None:
-    for k in ("t", "p", "v"):
+    for k in ("t", "p", "e", "v"):
         try:
             thumb_path(asset_id, k).unlink(missing_ok=True)
         except Exception:
@@ -380,7 +450,7 @@ def remove_derivatives(asset_id: int) -> None:
     # Older format leftovers
     base = settings.thumbs_dir() / f"{asset_id % 1000:03d}"
     for ext in ("webp", "jpg"):
-        for k in ("t", "p"):
+        for k in ("t", "p", "e"):
             try:
                 (base / f"{asset_id}_{k}.{ext}").unlink(missing_ok=True)
             except Exception:

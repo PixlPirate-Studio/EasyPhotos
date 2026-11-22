@@ -1,13 +1,14 @@
 """Browsing photos: timeline, details, images, video, downloads, map,
 calendar, tags, albums, search. Changes are admin-only."""
 import datetime as dt
+import io
 import os
 import secrets
 import threading
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from .. import db, geocode, media, recycle, settings, xmp
 from ..security import User, admin_user, audit, current_user, download_user
@@ -18,8 +19,9 @@ router = APIRouter(prefix="/api")
 
 
 def _item(r, favs=None):
+    w, h = media.edited_size(r["width"], r["height"], r["edit_rot"], r["edit_crop"])
     return {
-        "id": r["id"], "t": r["taken_at"], "w": r["width"] or 1, "h": r["height"] or 1,
+        "id": r["id"], "t": r["taken_at"], "w": w, "h": h,
         "k": "v" if r["kind"] == "video" else "i", "d": r["duration"], "c": r["city"],
         "v": r["thumb_ver"], "l": 1 if r["live_video_id"] else 0,
         "f": 1 if favs and r["id"] in favs else 0,
@@ -51,7 +53,7 @@ def list_assets(request: Request, user: User = Depends(current_user)):
         where += f" AND (a.taken_ts {op} ? OR (a.taken_ts = ? AND a.id {op} ?))"
         args = args + [bts, bts, bid]
     rows = db.q(
-        f"SELECT a.id, a.taken_at, a.taken_ts, a.width, a.height, a.kind, a.duration, a.city, a.thumb_ver, a.live_video_id "
+        f"SELECT a.id, a.taken_at, a.taken_ts, a.width, a.height, a.kind, a.duration, a.city, a.thumb_ver, a.live_video_id, a.edit_rot, a.edit_crop "
         f"FROM assets a JOIN libraries l ON l.id=a.library_id WHERE {where} "
         f"ORDER BY a.taken_ts {order}, a.id {order} LIMIT ?", args + [limit + 1])
     more = len(rows) > limit
@@ -99,6 +101,7 @@ def asset_detail(asset_id: int, user: User = Depends(current_user)):
         "duration": a["duration"], "video_codec": a["video_codec"],
         "description": a["description"], "favorite": fav, "hidden": bool(a["hidden"]),
         "live": bool(a["live_video_id"]), "v": a["thumb_ver"], "deleted": a["deleted_at"] is not None,
+        "edit": {"rot": a["edit_rot"] or 0, "crop": [float(x) for x in a["edit_crop"].split(",")] if a["edit_crop"] else None},
         "faces": [{"id": f["id"], "x1": f["x1"], "y1": f["y1"], "x2": f["x2"], "y2": f["y2"],
                    "person_id": f["person_id"] if (user.is_admin or not f["hidden"]) else None,
                    "name": f["name"] if (user.is_admin or not f["hidden"]) else None,
@@ -122,10 +125,62 @@ def thumb(asset_id: int, user: User = Depends(current_user)):
 
 
 @router.get("/assets/{asset_id}/preview")
-def preview(asset_id: int, user: User = Depends(current_user)):
-    get_asset_for(user, asset_id, allow_deleted=True)
+def preview(asset_id: int, orig: int = 0, user: User = Depends(current_user)):
+    """The photo as shown (cropped/rotated if edited). orig=1: as taken (for the editor)."""
+    a = get_asset_for(user, asset_id, allow_deleted=True)
     p = media.thumb_path(asset_id, "p")
+    if not orig and (a["edit_rot"] or a["edit_crop"]):
+        e = media.thumb_path(asset_id, "e")
+        if e.exists():
+            p = e
     return cached_file(p, "image/webp" if p.suffix == ".webp" else "image/jpeg")
+
+
+@router.patch("/assets/{asset_id}/edit")
+def edit_photo(asset_id: int, body: dict, user: User = Depends(admin_user)):
+    """Crop & rotate. Only instructions are saved; the photo file is never touched.
+    body: {rot: 0|90|180|270, crop: [x, y, w, h] (0-1, after rotating) or null}"""
+    a = get_asset_for(user, asset_id)
+    if a["kind"] == "video":
+        raise HTTPException(400, "Videos can't be cropped or rotated.")
+    rot = int(body.get("rot") or 0) % 360
+    if rot not in (0, 90, 180, 270):
+        raise HTTPException(400, "Rotation must be 0, 90, 180 or 270.")
+    crop = body.get("crop")
+    crop_text = None
+    if crop:
+        try:
+            x, y, w, h = (min(1.0, max(0.0, float(v))) for v in crop)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Crop must be four numbers.")
+        w, h = min(w, 1 - x), min(h, 1 - y)
+        if w < 0.02 or h < 0.02:
+            raise HTTPException(400, "That crop is too small.")
+        if not (x < 0.001 and y < 0.001 and w > 0.999 and h > 0.999):  # the whole photo = no crop
+            crop_text = f"{x:.5f},{y:.5f},{w:.5f},{h:.5f}"
+    db.ex("UPDATE assets SET edit_rot=?, edit_crop=?, thumb_ver=thumb_ver+1 WHERE id=?", (rot, crop_text, asset_id))
+    try:
+        media.make_edited(asset_id, rot, crop_text)
+    except Exception as e:
+        raise HTTPException(500, f"Couldn't make the edited picture: {e}")
+    audit(None, user, "edited photo %d (rotate %d, crop %s)", asset_id, rot, crop_text or "none")
+    r = db.q1("SELECT * FROM assets WHERE id=?", (asset_id,))
+    return {"item": _item(r), "edit": {"rot": rot, "crop": [float(v) for v in crop_text.split(",")] if crop_text else None}}
+
+
+@router.get("/assets/{asset_id}/edited")
+def download_edited(asset_id: int, user: User = Depends(download_user)):
+    """Full-size cropped/rotated copy, made on the fly from the untouched original."""
+    a = get_asset_for(user, asset_id)
+    if a["kind"] == "video":
+        raise HTTPException(400, "Videos aren't edited.")
+    img = media.open_image(str(asset_path(a)))
+    img = media.apply_edit(img.convert("RGB"), a["edit_rot"], a["edit_crop"])
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=92, optimize=True)
+    stem = os.path.splitext(a["filename"])[0]
+    return Response(buf.getvalue(), media_type="image/jpeg",
+                    headers={"Content-Disposition": f'attachment; filename="{stem}-edited.jpg"'})
 
 
 @router.get("/assets/{asset_id}/original")

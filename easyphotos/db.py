@@ -333,6 +333,10 @@ MIGRATIONS = [
     ("persons", "favorite", "INTEGER NOT NULL DEFAULT 0"),
     # smart search: 0 = not looked at yet, 1 = done, 2 = skipped, -1 = failed
     ("assets", "clip_status", "INTEGER NOT NULL DEFAULT 0"),
+    # crop & rotate, stored as instructions; the photo file itself is never changed.
+    # edit_rot: 0/90/180/270 clockwise. edit_crop: "x,y,w,h" (0-1, after rotating) or NULL.
+    ("assets", "edit_rot", "INTEGER NOT NULL DEFAULT 0"),
+    ("assets", "edit_crop", "TEXT"),
 ]
 
 

@@ -1254,6 +1254,8 @@ export async function settings(el) {
     } }, 'Save changes'));
   const cpu = s._threads_available || 4;
   el.append(head('Settings'),
+    h('a', { class: 'card', href: '#/settings/me', style: { flexDirection: 'row', alignItems: 'center', padding: '14px 16px', color: 'var(--text)', marginBottom: '16px' } },
+      icon('eyeoff'), h('div', { class: 'grow' }, h('b', {}, 'Hidden people'), h('div', { class: 'hint' }, 'People you hid from your own People page. Unhide them here.')), icon('next')),
     h('div', { class: 'cards' },
       h('section', { class: 'card' }, h('h2', {}, 'Thumbnails'),
         h('span', { class: 'hint', style: { marginTop: '-10px' } }, 'Small copies made once so the gallery loads fast. Your originals are never changed.'),
