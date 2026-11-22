@@ -47,22 +47,68 @@ export async function memory(el, p) {
 
 // ---------------------------------------------------------------- People
 
-export async function people(el) {
-  const list = await api('/api/people');
-  el.append(head('People', list.length ? `${num(list.length)} named` : null,
-    state.user.is_admin ? [h('a', { class: 'btn', href: '#/admin/faces' }, icon('scan'), 'Name faces')] : []));
+export async function people(el, p, q) {
+  const showHidden = q && q.hidden === '1';
+  let editing = false;
+  const list = await api(`/api/people${showHidden ? '?mine_hidden=1' : ''}`);
+  const hiddenCount = showHidden ? list.length : (await api('/api/people?mine_hidden=1').catch(() => [])).length;
+  const grid = h('div', { class: 'pgrid' });
+  const editBtn = h('button', { class: 'btn', onclick: () => { editing = !editing; editBtn.classList.toggle('primary', editing); editBtn.lastChild.textContent = editing ? 'Done' : 'Choose who shows'; draw(); } },
+    icon('eyeoff'), h('span', {}, 'Choose who shows'));
+  el.append(head(showHidden ? 'Hidden from my People' : 'People',
+    showHidden ? 'Only you don’t see these. Tap the eye to bring someone back.' : (list.length ? `${num(list.length)} named` : null),
+    [showHidden ? h('a', { class: 'btn', href: '#/people' }, icon('back'), 'Back to People') : (list.length ? editBtn : null),
+      state.user.is_admin && !showHidden ? h('a', { class: 'btn', href: '#/admin/faces' }, icon('scan'), 'Name faces') : null]));
   if (!list.length) {
     el.append(h('div', { class: 'empty' }, icon('people'),
-      state.user.is_admin ? h('div', {}, 'No named people yet. Go to ', h('a', { href: '#/admin/faces' }, 'Library › Faces'), ' to name the faces EasyPhotos found.') : 'No people yet.'));
-    return;
+      showHidden ? 'You haven’t hidden anyone.'
+        : state.user.is_admin ? h('div', {}, 'No named people yet. Go to ', h('a', { href: '#/admin/faces' }, 'Library › Faces'), ' to name the faces EasyPhotos found.') : 'No people yet.'));
   }
-  el.append(h('div', { class: 'pgrid' }, list.map(p => h('a', { class: 'pcard', href: `#/people/${p.id}`, style: p.hidden ? { opacity: 0.55 } : null },
-    personFace(p.cover, 96), h('span', { class: 'n' }, p.favorite ? h('span', { class: 'fav-star', 'aria-label': 'Favorite' }, '★ ') : null, p.name), h('span', { class: 'hint' }, p.hidden ? 'Hidden' : `${num(p.count)} faces`)))));
+  const toggle = async (person, card) => {
+    const hide = !person.hidden_for_me;
+    try {
+      await api(`/api/people/${person.id}/hide-for-me`, { method: 'POST', body: { hidden: hide } });
+      person.hidden_for_me = hide;
+      card.remove();
+      toast(hide ? `${person.name} won’t show on your People page.` : `${person.name} is back on your People page.`, false,
+        { label: 'Undo', run: async () => { await api(`/api/people/${person.id}/hide-for-me`, { method: 'POST', body: { hidden: !hide } }); go(location.hash); } });
+    } catch (e) { errToast(e); }
+  };
+  function draw() {
+    grid.innerHTML = '';
+    list.filter(pp => showHidden ? pp.hidden_for_me : !pp.hidden_for_me).forEach(pp => {
+      const card = h('a', { class: 'pcard' + (editing || showHidden ? ' editing' : ''), href: `#/people/${pp.id}`, style: pp.hidden ? { opacity: 0.55 } : null },
+        personFace(pp.cover, 96), h('span', { class: 'n' }, pp.favorite ? h('span', { class: 'fav-star', 'aria-label': 'Favorite' }, '★ ') : null, pp.name),
+        h('span', { class: 'hint' }, pp.hidden ? 'Hidden for everyone' : `${num(pp.count)} faces`));
+      if (editing || showHidden) {
+        card.append(h('button', { class: 'pcard-eye', 'aria-label': showHidden ? `Show ${pp.name} again` : `Hide ${pp.name} from my People`,
+          title: showHidden ? 'Show again' : 'Hide from my People',
+          onclick: (e) => { e.preventDefault(); e.stopPropagation(); toggle(pp, card); } }, icon(showHidden ? 'eye' : 'eyeoff')));
+      }
+      grid.append(card);
+    });
+  }
+  draw();
+  el.append(grid);
+  if (!showHidden && hiddenCount) {
+    el.append(h('div', { style: { textAlign: 'center', padding: '20px 0' } },
+      h('a', { href: '#/people?hidden=1', class: 'hint' }, `${num(hiddenCount)} ${hiddenCount === 1 ? 'person' : 'people'} hidden from your People · Show them`)));
+  }
 }
 
 export async function person(el, p) {
   const pr = await api(`/api/people/${p.id}`);
   const actions = [];
+  const mine = h('button', { class: 'btn', onclick: async () => {
+    const hide = !pr.hidden_for_me;
+    try {
+      await api(`/api/people/${p.id}/hide-for-me`, { method: 'POST', body: { hidden: hide } });
+      pr.hidden_for_me = hide;
+      mine.lastChild.textContent = hide ? 'Show in my People' : 'Hide from my People';
+      toast(hide ? `${pr.name} won’t show on your People page. You can still search for them.` : `${pr.name} is back on your People page.`);
+    } catch (e) { errToast(e); }
+  } }, icon('eyeoff'), h('span', {}, pr.hidden_for_me ? 'Show in my People' : 'Hide from my People'));
+  if (pr.name) actions.push(mine);
   if (state.user.is_admin) {
     const star = h('button', { class: 'btn' + (pr.favorite ? ' primary' : ''), onclick: async () => {
       try {
@@ -90,8 +136,8 @@ export async function person(el, p) {
         try { await api(`/api/people/${p.id}`, { method: 'PATCH', body: { name: '' } }); toast('Name removed.'); go(`#/admin/faces/${p.id}`); } catch (e) { errToast(e); }
       } }, 'Remove name'),
       h('button', { class: 'btn ghost', onclick: async () => {
-        try { await api(`/api/people/${p.id}`, { method: 'PATCH', body: { hidden: !pr.hidden } }); toast(pr.hidden ? 'Shown again.' : 'Hidden from People.'); go('#/people'); } catch (e) { errToast(e); }
-      } }, icon(pr.hidden ? 'eye' : 'eyeoff'), pr.hidden ? 'Unhide' : 'Hide'));
+        try { await api(`/api/people/${p.id}`, { method: 'PATCH', body: { hidden: !pr.hidden } }); toast(pr.hidden ? 'Shown again for everyone.' : 'Hidden for everyone.'); go('#/people'); } catch (e) { errToast(e); }
+      } }, icon(pr.hidden ? 'eye' : 'eyeoff'), pr.hidden ? 'Unhide for everyone' : 'Hide for everyone'));
   }
   el.append(h('div', { class: 'page-head' },
     pr.cover ? h('img', { src: faceUrl(pr.cover), alt: '', style: { width: '64px', height: '64px', borderRadius: '50%', objectFit: 'cover' } }) : null,

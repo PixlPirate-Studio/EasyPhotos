@@ -211,6 +211,13 @@ CREATE TABLE IF NOT EXISTS job_commands (
     created_at REAL NOT NULL
 );
 
+-- People each account chose not to see on their own People page
+CREATE TABLE IF NOT EXISTS user_hidden_people (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, person_id)
+) WITHOUT ROWID;
+
 -- Smart search: what each photo looks like, as 512 numbers (CLIP)
 CREATE TABLE IF NOT EXISTS clip_embeddings (
     asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,

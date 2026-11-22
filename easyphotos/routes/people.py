@@ -17,9 +17,37 @@ def _person_out(r):
             "hidden": bool(r["hidden"]), "unmatched": bool(r["unmatched"]), "favorite": bool(r["favorite"])}
 
 
+def _hidden_for(user) -> set:
+    return {r["person_id"] for r in db.q("SELECT person_id FROM user_hidden_people WHERE user_id=?", (user.id,))}
+
+
 @router.get("/people")
-def people(user: User = Depends(current_user)):
-    """Named people (hidden people only for the admin)."""
+def people(mine_hidden: int = 0, user: User = Depends(current_user)):
+    """Named people for this account's People page. People this account hid
+    ("Hide from my People") are left out, or only them with mine_hidden=1."""
+    out = _people_all(user)
+    mine = _hidden_for(user)
+    for p in out:
+        p["hidden_for_me"] = p["id"] in mine
+    if mine_hidden:
+        return [p for p in out if p["hidden_for_me"]]
+    return [p for p in out if not p["hidden_for_me"]]
+
+
+@router.post("/people/{person_id}/hide-for-me")
+def hide_for_me(person_id: int, body: dict, user: User = Depends(current_user)):
+    """Any account can hide (or show again) a person on its own People page."""
+    if db.q1("SELECT id FROM persons WHERE id=? AND name IS NOT NULL", (person_id,)) is None:
+        raise HTTPException(404, "Person not found.")
+    if body.get("hidden", True):
+        db.ex("INSERT OR IGNORE INTO user_hidden_people(user_id, person_id) VALUES (?, ?)", (user.id, person_id))
+    else:
+        db.ex("DELETE FROM user_hidden_people WHERE user_id=? AND person_id=?", (user.id, person_id))
+    return {"ok": True, "hidden_for_me": bool(body.get("hidden", True))}
+
+
+def _people_all(user):
+    """Named people (hidden-for-everyone people only for the admin)."""
     lc, la = library_clause(user)
     if lc:
         rows = db.q(
@@ -38,7 +66,9 @@ def person(person_id: int, user: User = Depends(current_user)):
     r = db.q1("SELECT * FROM persons WHERE id=?", (person_id,))
     if r is None or (not user.is_admin and (r["hidden"] or not r["name"])):
         raise HTTPException(404, "Person not found.")
-    return _person_out(r)
+    out = _person_out(r)
+    out["hidden_for_me"] = bool(db.val("SELECT 1 FROM user_hidden_people WHERE user_id=? AND person_id=?", (user.id, person_id), default=0))
+    return out
 
 
 class SameName(Exception):
