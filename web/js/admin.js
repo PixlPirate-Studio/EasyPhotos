@@ -329,12 +329,98 @@ export async function faces(el, p, q) {
     h('option', { value: 'count' }, 'Most photos first'), h('option', { value: 'new' }, 'Newest first'));
   sortSel.value = sort;
   const intro = h('p', { class: 'hint', style: { margin: '0 0 12px' } });
-  el.append(head('Library › Faces', 'Each card is one person the AI grouped together. Type a name, or leave it unmatched. Click a card to fix wrong faces in it.', [sortSel]),
-    tabs, h('div', { style: { height: '12px' } }), intro, grid, more);
+  const cleanBtn = h('button', { class: 'btn', onclick: () => cleanUp() }, icon('trash'), 'Clean up…');
+  const selTools = h('div', { class: 'row', style: { margin: '0 0 12px', gap: '8px' } });
+  const selBar = h('div', { class: 'card hidden dupbar' });
+  const selected = new Map(); // person id -> card element
+  let selectAll = false;
+  el.append(head('Library › Faces', 'Each card is one person the AI grouped together. Type a name, or leave it unmatched. Click a card to fix wrong faces in it.', [cleanBtn, sortSel]),
+    tabs, h('div', { style: { height: '12px' } }), intro, selTools, grid, more, selBar);
+  const canSelect = () => ['needs', 'possible', 'single'].includes(tab);
+  function drawSel() {
+    selBar.innerHTML = '';
+    selBar.classList.toggle('hidden', !selected.size);
+    selTools.innerHTML = '';
+    if (canSelect() && grid.querySelector('.fcard')) {
+      selTools.append(
+        h('button', { class: 'btn small', onclick: () => { selectAll = true; grid.querySelectorAll('.fcard').forEach(c => pickCard(c, true)); drawSel(); } }, 'Select all shown'),
+        h('span', { class: 'hint' }, 'Tick the people you don’t want to name, then remove them all at once.'));
+    }
+    if (!selected.size) return;
+    const n = selected.size;
+    selBar.append(h('b', { class: 'grow' }, `${num(n)} selected`),
+      h('button', { class: 'btn small warn', onclick: () => bulk('remove') }, icon('trash'), 'Remove faces'),
+      h('button', { class: 'btn small', onclick: () => bulk('unmatched') }, 'Leave unmatched'),
+      h('button', { class: 'btn small ghost', onclick: () => { selectAll = false; [...selected.values()].forEach(c => pickCard(c, false)); drawSel(); } }, 'Clear'));
+  }
+  function pickCard(c, on) {
+    const id = Number(c.dataset.id);
+    const box = c.querySelector('.fsel');
+    if (!box) return;
+    box.checked = on;
+    c.classList.toggle('picked', on);
+    if (on) selected.set(id, c); else selected.delete(id);
+  }
+  async function bulk(action) {
+    const ids = [...selected.keys()];
+    const cards = [...selected.values()];
+    try {
+      const r = await post('/api/admin/faces/bulk', { action, person_ids: ids });
+      cards.forEach(c => c.remove());
+      selected.clear(); selectAll = false; drawSel();
+      if (action === 'remove') {
+        toast(`Removed ${num(r.faces)} faces from ${num(ids.length)} people. Photos untouched.`, false, { label: 'Undo', run: async () => {
+          try { await post('/api/faces/restore', { ids: r.face_ids }); toast('Brought back.'); load(true); } catch (e) { errToast(e); }
+        } });
+      } else toast(`${num(ids.length)} left unmatched.`);
+      if (!grid.querySelector('.fcard')) load(true);
+    } catch (e) { errToast(e); }
+  }
+  async function cleanUp() {
+    const photosSel = h('select', { class: 'input' },
+      h('option', { value: '0' }, 'Off'), h('option', { value: '1' }, 'Seen in only 1 photo'),
+      h('option', { value: '2', selected: true }, 'Seen in 2 photos or fewer'), h('option', { value: '3' }, 'Seen in 3 photos or fewer'),
+      h('option', { value: '5' }, 'Seen in 5 photos or fewer'));
+    const smallSel = h('select', { class: 'input' },
+      h('option', { value: '0', selected: true }, 'Off'), h('option', { value: '0.04' }, 'Tiny faces (far in the background)'),
+      h('option', { value: '0.07' }, 'Small faces (background)'));
+    const count = h('div', { class: 'card', style: { padding: '12px 14px' } }, 'Counting…');
+    const go = h('button', { class: 'btn warn' }, 'Remove them');
+    let last = null;
+    const recount = async () => {
+      count.textContent = 'Counting…'; go.disabled = true;
+      try {
+        last = await post('/api/admin/faces/cleanup', { max_photos: Number(photosSel.value), small: Number(smallSel.value), dry_run: true });
+        count.textContent = last.faces
+          ? `This removes ${num(last.faces)} faces${last.groups ? ` (${num(last.groups)} people seen in only a few photos${last.small_faces ? `, plus ${num(last.small_faces)} small faces` : ''})` : ` (small faces)`}.`
+          : 'Nothing matches these rules.';
+        go.disabled = !last.faces;
+      } catch (e) { count.textContent = 'Couldn’t count.'; }
+    };
+    photosSel.onchange = recount; smallSel.onchange = recount;
+    const m = modal({ title: 'Clean up background people', body: h('div', { style: { display: 'flex', flexDirection: 'column', gap: '14px' } },
+      h('p', { class: 'hint', style: { margin: 0 } }, 'People in the background usually show up in just one or two photos, and their faces are small. Only unnamed faces waiting for a name are removed. Photos are never touched, and removed faces won’t come back unless you choose “Find all faces again” in Settings.'),
+      h('label', { class: 'field' }, h('span', {}, 'People seen in only a few photos'), photosSel),
+      h('label', { class: 'field' }, h('span', {}, 'Small faces'), smallSel),
+      count,
+      h('div', { class: 'row', style: { justifyContent: 'flex-end', gap: '8px' } }, h('button', { class: 'btn ghost', onclick: () => m.close() }, 'Cancel'), go)) });
+    go.onclick = async () => {
+      go.disabled = true; go.textContent = 'Removing…';
+      try {
+        const r = await post('/api/admin/faces/cleanup', { max_photos: Number(photosSel.value), small: Number(smallSel.value) });
+        m.close();
+        toast(`Removed ${num(r.faces)} faces. Photos untouched.`, false, { label: 'Undo', run: async () => {
+          try { await post('/api/faces/restore', { ids: r.face_ids }); toast('Brought back.'); load(true); } catch (e) { errToast(e); }
+        } });
+        load(true);
+      } catch (e) { errToast(e); go.disabled = false; go.textContent = 'Remove them'; }
+    };
+    recount();
+  }
   const names = { needs: 'Needs a name', possible: 'Possible matches', named: 'Named', unmatched: 'Left unmatched', single: 'Single faces', hidden: 'Hidden' };
   const remember = () => { facesSpot = { tab, sort, count: grid.querySelectorAll('.fcard').length, y: window.scrollY, at: Date.now() }; };
   async function load(reset = false, want = 40) {
-    if (reset) { offset = 0; grid.innerHTML = ''; }
+    if (reset) { offset = 0; grid.innerHTML = ''; selected.clear(); selectAll = false; }
     let r;
     try { r = await api(`/api/admin/faces?tab=${tab}&sort=${sort}&offset=${offset}&limit=${want}`); } catch (e) { return errToast(e); }
     tabs.innerHTML = '';
@@ -356,8 +442,9 @@ export async function faces(el, p, q) {
         tab === 'needs' ? 'Nothing waiting for a name. If face finding is still running, more will show up here.'
           : tab === 'possible' ? (r.counts.named ? 'No groups look like anyone you’ve named right now.' : 'Name a few people first. Groups that look like them will show up here.') : 'Nothing here.'));
     }
-    r.items.forEach(item => grid.append(card(item)));
+    r.items.forEach(item => { const c = card(item); grid.append(c); if (selectAll && canSelect()) pickCard(c, true); });
     offset += r.items.length;
+    drawSel();
     more.innerHTML = '';
     if (r.items.length === want) more.append(h('button', { class: 'btn', onclick: () => load() }, 'Show more'));
   }
@@ -365,7 +452,7 @@ export async function faces(el, p, q) {
     const sug = item.suggest && !item.name ? item.suggest : null;
     const input = h('input', { class: 'input', placeholder: sug ? 'Or type a different name…' : 'Type a name…', value: item.name || '', list: 'people-names', 'aria-label': 'Name' });
     const c = h('article', { class: 'fcard' });
-    const done = (msg) => { toast(msg); if (tab !== 'named') c.remove(); };
+    const done = (msg) => { toast(msg); if (tab !== 'named') { c.remove(); selected.delete(item.id); drawSel(); } };
     const save = async () => {
       const name = input.value.trim();
       if (!name) { toast('Type a name first.', true); return; }
@@ -401,6 +488,12 @@ export async function faces(el, p, q) {
       } catch (err) { errToast(err); }
     };
     const trashBtn = (label, fn) => h('button', { class: 'face-trash', title: label, 'aria-label': label, onclick: fn }, icon('trash'));
+    c.dataset.id = item.id;
+    if (canSelect() && !item.name) {
+      const cbx = h('input', { type: 'checkbox', class: 'fsel', 'aria-label': 'Select',
+        onclick: (e) => e.stopPropagation(), onchange: () => { pickCard(c, cbx.checked); drawSel(); } });
+      c.append(h('label', { class: 'fsel-wrap', onclick: (e) => e.stopPropagation() }, cbx));
+    }
     c.append(
       h('div', { class: 'top', onclick: () => { remember(); go(`#/admin/faces/${item.id}`); } },
         h('div', { class: 'cover-wrap' },

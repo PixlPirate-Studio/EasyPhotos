@@ -367,3 +367,8 @@ main.content{flex:1 1 auto;min-width:0;padding:20px 28px 60px}
 .crop-stage{overflow:hidden}
 .crop-wrap{overflow:visible}
 .cropper .crop-stage{clip-path:inset(0)}
+
+.fcard{position:relative}
+.fsel-wrap{position:absolute;top:10px;right:10px;z-index:3;width:34px;height:34px;display:grid;place-items:center;cursor:pointer;border-radius:10px;background:rgba(20,22,28,.6)}
+.fsel{width:22px;height:22px;accent-color:var(--accent);cursor:pointer;margin:0}
+.fcard.picked{outline:3px solid var(--accent);outline-offset:-1px;background:var(--accentbg)}

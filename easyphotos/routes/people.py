@@ -361,10 +361,90 @@ def ignore_person(person_id: int, user: User = Depends(admin_user)):
     return {"ok": True, "face_ids": ids, "person_id": person_id}
 
 
+def _set_aside_groups(person_ids, user):
+    """Remove whole unnamed groups from face matching. Returns the face ids (for Undo)."""
+    face_ids = []
+    for start in range(0, len(person_ids), 500):
+        part = person_ids[start:start + 500]
+        marks = ",".join("?" * len(part))
+        part_ok = [r["id"] for r in db.q(f"SELECT id FROM persons WHERE id IN ({marks}) AND name IS NULL", part)]
+        if not part_ok:
+            continue
+        m2 = ",".join("?" * len(part_ok))
+        face_ids += [r["id"] for r in db.q(f"SELECT id FROM faces WHERE person_id IN ({m2}) AND rejected=0", part_ok)]
+        with db.tx() as c:
+            c.execute(f"UPDATE faces SET rejected=1, person_id=NULL WHERE person_id IN ({m2})", part_ok)
+            c.execute(f"DELETE FROM persons WHERE id IN ({m2})", part_ok)
+    return face_ids
+
+
+@router.post("/admin/faces/bulk")
+def faces_bulk(body: dict, user: User = Depends(admin_user)):
+    """Many face groups at once. body: {action: "remove" | "unmatched", person_ids: [...]}.
+    Only unnamed groups are touched. "remove" sets the faces aside (photos untouched)."""
+    ids = [int(x) for x in (body.get("person_ids") or [])][:20000]
+    action = body.get("action")
+    if action == "remove":
+        face_ids = _set_aside_groups(ids, user)
+        audit(None, user, "removed %d faces in %d groups from face matching", len(face_ids), len(ids))
+        return {"ok": True, "faces": len(face_ids), "face_ids": face_ids}
+    if action == "unmatched":
+        for start in range(0, len(ids), 500):
+            part = ids[start:start + 500]
+            db.ex(f"UPDATE persons SET unmatched=1 WHERE name IS NULL AND id IN ({','.join('?' * len(part))})", part)
+        return {"ok": True}
+    raise HTTPException(400, "Unknown action.")
+
+
+@router.post("/admin/faces/cleanup")
+def faces_cleanup(body: dict, user: User = Depends(admin_user)):
+    """Clean up background people in one go. Only unnamed groups waiting for a name.
+    body: {max_photos: N (groups seen in N photos or fewer; 0 = off),
+           small: fraction (faces narrower than this part of the photo; 0 = off),
+           dry_run: true to only count}"""
+    max_photos = max(0, int(body.get("max_photos") or 0))
+    small = max(0.0, min(0.5, float(body.get("small") or 0)))
+    dry = bool(body.get("dry_run"))
+    where = "p.name IS NULL AND p.unmatched=0 AND p.hidden=0 AND f.rejected=0 AND f.manual=0 AND f.confirmed=0"
+    groups = []
+    if max_photos:
+        groups = [r["id"] for r in db.q(
+            f"SELECT p.id FROM persons p JOIN faces f ON f.person_id=p.id WHERE {where} "
+            f"GROUP BY p.id HAVING COUNT(DISTINCT f.asset_id) <= ?", (max_photos,))]
+    small_faces = []
+    if small:
+        gs = set(groups)
+        small_faces = [r for r in db.q(f"SELECT f.id, f.person_id FROM persons p JOIN faces f ON f.person_id=p.id "
+                                       f"WHERE {where} AND (f.x2 - f.x1) < ?", (small,)) if r["person_id"] not in gs]
+    n_group_faces = 0
+    if groups:
+        for start in range(0, len(groups), 500):
+            part = groups[start:start + 500]
+            n_group_faces += db.val(f"SELECT COUNT(*) FROM faces WHERE rejected=0 AND person_id IN ({','.join('?' * len(part))})", part, default=0)
+    total_faces = n_group_faces + len(small_faces)
+    if dry:
+        return {"faces": total_faces, "groups": len(groups), "small_faces": len(small_faces)}
+    face_ids = _set_aside_groups(groups, user)
+    if small_faces:
+        sids = [r["id"] for r in small_faces]
+        touched = {r["person_id"] for r in small_faces}
+        for start in range(0, len(sids), 500):
+            part = sids[start:start + 500]
+            db.ex(f"UPDATE faces SET rejected=1, person_id=NULL WHERE id IN ({','.join('?' * len(part))})", part)
+        face_ids += sids
+        for pid in touched:
+            try:
+                cluster.recompute_person(pid)
+            except Exception:
+                pass
+    audit(None, user, "face clean-up removed %d faces (%d whole groups)", len(face_ids), len(groups))
+    return {"ok": True, "faces": len(face_ids), "groups": len(groups), "face_ids": face_ids}
+
+
 @router.post("/faces/restore")
 def restore_faces(body: dict, user: User = Depends(admin_user)):
     """Undo for the trash can: brings set-aside faces back and groups them again."""
-    ids = [int(x) for x in (body.get("ids") or [])][:5000]
+    ids = [int(x) for x in (body.get("ids") or [])][:50000]
     if not ids:
         return {"ok": True}
     marks = ",".join("?" * len(ids))
