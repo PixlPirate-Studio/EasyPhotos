@@ -21,12 +21,35 @@ function gridPage(el, query, opts = {}) {
 
 export async function photos(el) {
   const strip = h('div', { class: 'people-strip', 'aria-label': 'People' });
+  // Arrows for computers (phones just swipe). Each only shows when there's more that way.
+  const left = h('button', { class: 'strip-arrow left hidden', 'aria-label': 'Scroll people left', onclick: () => strip.scrollBy({ left: -strip.clientWidth * 0.8, behavior: 'smooth' }) }, icon('back'));
+  const right = h('button', { class: 'strip-arrow right hidden', 'aria-label': 'Scroll people right', onclick: () => strip.scrollBy({ left: strip.clientWidth * 0.8, behavior: 'smooth' }) }, icon('next'));
+  const wrap = h('div', { class: 'people-strip-wrap' }, strip, left, right);
+  const arrows = () => {
+    const max = strip.scrollWidth - strip.clientWidth;
+    left.classList.toggle('hidden', strip.scrollLeft <= 2);
+    right.classList.toggle('hidden', strip.scrollLeft >= max - 2);
+  };
+  strip.addEventListener('scroll', arrows, { passive: true });
+  window.addEventListener('resize', arrows);
+  // A normal mouse wheel moves the row sideways while it can; at either end the page scrolls as usual.
+  strip.addEventListener('wheel', (e) => {
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY) || !e.deltaY) return; // trackpad sideways swipe: leave it alone
+    const max = strip.scrollWidth - strip.clientWidth;
+    if (max <= 0) return;
+    if ((e.deltaY > 0 && strip.scrollLeft < max - 1) || (e.deltaY < 0 && strip.scrollLeft > 1)) {
+      e.preventDefault();
+      strip.scrollLeft += e.deltaY;
+    }
+  }, { passive: false });
   const mem = h('div');
-  el.append(strip, mem);
+  el.append(wrap, mem);
   api('/api/people').then(people => {
-    if (!people.length) { strip.remove(); return; }
+    if (!people.length) { wrap.remove(); return; }
     people.slice(0, 20).forEach(p => strip.append(h('a', { href: `#/people/${p.id}` }, personFace(p.cover, 64), h('span', {}, p.name))));
-  }).catch(() => strip.remove());
+    strip.append(h('a', { href: '#/people', class: 'strip-all' }, h('div', { class: 'ph' }, icon('people')), h('span', {}, people.length > 20 ? `All ${num(people.length)}` : 'All people')));
+    requestAnimationFrame(arrows);
+  }).catch(() => wrap.remove());
   api('/api/memories').then(ms => {
     if (!ms.length) return;
     const now = new Date();

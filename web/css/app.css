@@ -378,3 +378,14 @@ main.content{flex:1 1 auto;min-width:0;padding:20px 28px 60px}
 .grid-tools label{display:flex;align-items:center;gap:6px}
 .grid-tools .sort-select,.list-sort{width:auto;min-width:0;padding-top:6px;padding-bottom:6px;font-size:13px}
 .tile .szbadge{position:absolute;left:6px;bottom:6px;font-size:11px;font-weight:600;color:#fff;background:rgba(0,0,0,.55);padding:2px 6px;border-radius:6px;pointer-events:none}
+
+/* people row: arrows on computers */
+.people-strip-wrap{position:relative}
+.strip-arrow{position:absolute;top:22px;width:38px;height:38px;border-radius:50%;border:1px solid var(--line2);display:grid;place-items:center;cursor:pointer;
+  background:rgba(20,22,28,.92);color:var(--text);box-shadow:0 2px 8px rgba(0,0,0,.5);z-index:2}
+.strip-arrow.left{left:-6px}.strip-arrow.right{right:-6px}
+.strip-arrow:hover{background:var(--accent);color:#0b0d12}
+.strip-arrow svg{width:18px;height:18px}
+@media (hover:none){.strip-arrow{display:none}}
+.people-strip .strip-all .ph{display:grid;place-items:center;color:var(--text2)}
+.people-strip .strip-all .ph svg{width:28px;height:28px}
