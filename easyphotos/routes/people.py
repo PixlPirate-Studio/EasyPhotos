@@ -26,6 +26,14 @@ def people(mine_hidden: int = 0, user: User = Depends(current_user)):
     """Named people for this account's People page. People this account hid
     ("Hide from my People") are left out, or only them with mine_hidden=1."""
     out = _people_all(user)
+    # newest and oldest photo of each person (for sorting)
+    dates = {r["pid"]: r for r in db.q(
+        "SELECT f.person_id AS pid, MAX(a.taken_ts) AS newest, MIN(a.taken_ts) AS oldest FROM faces f "
+        "JOIN persons p ON p.id=f.person_id JOIN assets a ON a.id=f.asset_id "
+        "WHERE p.name IS NOT NULL AND f.rejected=0 AND a.deleted_at IS NULL GROUP BY f.person_id")}
+    for p in out:
+        d = dates.get(p["id"])
+        p["newest"], p["oldest"] = (d["newest"], d["oldest"]) if d else (None, None)
     mine = _hidden_for(user)
     for p in out:
         p["hidden_for_me"] = p["id"] in mine
@@ -232,15 +240,17 @@ def face_groups(tab: str = "needs", offset: int = 0, limit: int = 60, sort: str 
     elif fav_only and tab in ("needs", "single"):
         # only groups that look like a favorite person
         keep = [x for x in possible if (x[1]["face_count"] >= min_faces) == (tab == "needs")]
-        if sort == "new":
-            keep.sort(key=lambda x: -(x[1]["created_at"] or 0))
+        if sort in ("new", "old"):
+            keep.sort(key=lambda x: (x[1]["created_at"] or 0) * (-1 if sort == "new" else 1))
+        elif sort == "fewest":
+            keep.sort(key=lambda x: (x[1]["face_count"], x[1]["id"]))
         else:
             keep.sort(key=lambda x: (-x[1]["face_count"], x[1]["id"]))
         page = keep[offset:offset + limit]
         rows = [x[1] for x in page]
         sugg = {x[1]["id"]: x[2] for x in page}
     else:
-        order = "created_at DESC" if sort == "new" else "face_count DESC, id"
+        order = {"new": "created_at DESC", "old": "created_at ASC", "fewest": "face_count ASC, id"}.get(sort, "face_count DESC, id")
         if tab == "named":
             order = "favorite DESC, " + order
         rows = db.q(f"SELECT * FROM persons WHERE {where[tab]} ORDER BY {order} LIMIT ? OFFSET ?", (limit, offset))

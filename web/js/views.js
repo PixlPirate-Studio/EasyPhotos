@@ -1,5 +1,5 @@
 // Main pages everyone can see.
-import { h, icon, api, modal, nameSafely, thumbUrl, faceUrl, img, personFace, toast, errToast, promptDialog, confirmDialog, MONTHS_LONG, DAYS, num, fmtDay } from './ui.js';
+import { h, icon, api, modal, nameSafely, thumbUrl, faceUrl, img, personFace, toast, errToast, promptDialog, confirmDialog, MONTHS_LONG, DAYS, num, fmtDay, fmtBytes, listSort, LIST_SORTS } from './ui.js';
 import { PhotoGrid } from './grid.js';
 import { state, loadLeaflet, TILE_URL, TILE_ATTR, TILE_OPTS } from './state.js';
 import { openViewer } from './viewer.js';
@@ -73,9 +73,13 @@ export async function people(el, p, q) {
         { label: 'Undo', run: async () => { await api(`/api/people/${person.id}/hide-for-me`, { method: 'POST', body: { hidden: !hide } }); go(location.hash); } });
     } catch (e) { errToast(e); }
   };
+  const S = LIST_SORTS;
+  const sorter = listSort('people', [S.mostPhotos, S.fewestPhotos, S.nameAZ, S.nameZA, S.newest, S.oldest], () => draw());
   function draw() {
     grid.innerHTML = '';
-    list.filter(pp => showHidden ? pp.hidden_for_me : !pp.hidden_for_me).forEach(pp => {
+    // favorites always stay on top, then the chosen order
+    const shown = sorter.sort(list.filter(pp => showHidden ? pp.hidden_for_me : !pp.hidden_for_me));
+    [...shown.filter(pp => pp.favorite), ...shown.filter(pp => !pp.favorite)].forEach(pp => {
       const card = h('a', { class: 'pcard' + (editing || showHidden ? ' editing' : ''), href: `#/people/${pp.id}`, style: pp.hidden ? { opacity: 0.55 } : null },
         personFace(pp.cover, 96), h('span', { class: 'n' }, pp.favorite ? h('span', { class: 'fav-star', 'aria-label': 'Favorite' }, '★ ') : null, pp.name),
         h('span', { class: 'hint' }, pp.hidden ? 'Hidden for everyone' : `${num(pp.count)} faces`));
@@ -88,6 +92,7 @@ export async function people(el, p, q) {
     });
   }
   draw();
+  if (list.length > 1) el.append(h('div', { class: 'row', style: { justifyContent: 'flex-end', marginBottom: '14px' } }, sorter.el));
   el.append(grid);
 }
 
@@ -265,8 +270,17 @@ export async function albums(el) {
     try { const a = await api('/api/albums', { method: 'POST', body: { name } }); toast('Album created. Select photos and use “Add to album” to fill it.'); go(`#/albums/${a.id}`); } catch (e) { errToast(e); }
   } }, '+ New album')] : []));
   if (!list.length) { el.append(h('div', { class: 'empty' }, icon('album'), state.user.is_admin ? 'No albums yet. Select photos and choose “Add to album”.' : 'No albums yet.')); return; }
-  el.append(h('div', { class: 'albumgrid' }, list.map(a => h('a', { href: `#/albums/${a.id}` },
-    h('div', { class: 'cov' }, a.cover ? img(thumbUrl(a.cover)) : null), h('b', {}, a.name), h('span', { class: 'hint' }, `${num(a.n)} photos`)))));
+  const S = LIST_SORTS;
+  const box = h('div', { class: 'albumgrid' });
+  const sorter = listSort('albums', [S.created, S.createdOld, S.nameAZ, S.nameZA, S.mostPhotos, S.fewestPhotos, S.newest, S.oldest, S.largest, S.smallest], () => draw());
+  const draw = () => {
+    box.innerHTML = '';
+    sorter.sort(list).forEach(a => box.append(h('a', { href: `#/albums/${a.id}` },
+      h('div', { class: 'cov' }, a.cover ? img(thumbUrl(a.cover)) : null), h('b', {}, a.name),
+      h('span', { class: 'hint' }, `${num(a.n)} photos${a.bytes ? ` · ${fmtBytes(a.bytes)}` : ''}`))));
+  };
+  el.append(h('div', { class: 'row', style: { justifyContent: 'flex-end', marginBottom: '14px' } }, sorter.el), box);
+  draw();
 }
 
 export async function album(el, p) {
@@ -291,16 +305,14 @@ export async function tags(el) {
   const list = await api('/api/tags');
   el.append(head('Tags', 'Only tags that were added by hand. Nothing is tagged automatically.'));
   if (!list.length) { el.append(h('div', { class: 'empty' }, icon('tag'), state.user.is_admin ? 'No tags yet. Add tags when editing a photo, or select photos and choose “Add tag”.' : 'No tags yet.')); return; }
-  let sort = 'count';
+  const S = LIST_SORTS;
   const box = h('div', { class: 'albumgrid' });
+  const sorter = listSort('tags', [S.mostPhotos, S.fewestPhotos, S.nameAZ, S.nameZA, S.newest, S.oldest, S.largest, S.smallest], () => draw());
   const draw = () => {
     box.innerHTML = '';
-    const items = [...list].sort((a, b) => sort === 'az' ? a.name.localeCompare(b.name) : b.n - a.n);
-    items.forEach(t => box.append(h('a', { href: `#/tags/${t.id}` }, h('div', { class: 'cov' }, img(thumbUrl(t.cover))), h('b', {}, t.name), h('span', { class: 'hint' }, `${num(t.n)} photos`))));
+    sorter.sort(list).forEach(t => box.append(h('a', { href: `#/tags/${t.id}` }, h('div', { class: 'cov' }, img(thumbUrl(t.cover))), h('b', {}, t.name), h('span', { class: 'hint' }, `${num(t.n)} photos`))));
   };
-  el.append(h('div', { class: 'row', style: { marginBottom: '16px' } },
-    h('button', { class: 'chip on', onclick: (e) => { sort = 'count'; e.target.parentNode.querySelectorAll('.chip').forEach(c => c.classList.remove('on')); e.target.classList.add('on'); draw(); } }, 'Most photos'),
-    h('button', { class: 'chip', onclick: (e) => { sort = 'az'; e.target.parentNode.querySelectorAll('.chip').forEach(c => c.classList.remove('on')); e.target.classList.add('on'); draw(); } }, 'A to Z')), box);
+  el.append(h('div', { class: 'row', style: { justifyContent: 'flex-end', marginBottom: '14px' } }, sorter.el), box);
   draw();
 }
 
@@ -317,7 +329,7 @@ export async function tag(el, p) {
       if (!await confirmDialog({ title: `Remove “${t.name}” from all photos?`, text: 'The photos themselves are not touched.', confirmLabel: 'Remove tag', danger: true })) return;
       try { await api(`/api/tags/${t.id}`, { method: 'DELETE' }); go('#/tags'); } catch (e) { errToast(e); }
     } }, 'Remove tag from all')] : [];
-  el.append(head(t.name, `${num(t.n)} photos · newest first`, acts));
+  el.append(head(t.name, `${num(t.n)} photos`, acts));
   return gridPage(el, { tag: t.id });
 }
 

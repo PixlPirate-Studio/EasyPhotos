@@ -52,6 +52,7 @@ const P = {
   crop: '<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>',
   rotl: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
   rotr: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+  sort: '<path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/>',
   check: '<path d="M5 12l5 5 9-10"/>',
   camera: '<rect x="3" y="7" width="18" height="13" rx="2"/><circle cx="12" cy="13.5" r="3.5"/><path d="M8 7l1.5-3h5L16 7"/>',
   doc: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
@@ -306,3 +307,37 @@ export async function nameSafely(name, send) {
     return await send(pick);
   }
 }
+
+
+// A Sort menu for lists (albums, people, tags, folders). Remembers the choice.
+// options: [{ v, label, cmp: (a, b) => number }]
+export function listSort(key, options, onChange) {
+  let cur = null;
+  try { cur = localStorage.getItem('ep_lsort:' + key); } catch (e) { /* ignore */ }
+  if (!options.some(o => o.v === cur)) cur = options[0].v;
+  const sel = h('select', { class: 'input list-sort', 'aria-label': 'Sort', onchange: () => {
+    try { localStorage.setItem('ep_lsort:' + key, sel.value); } catch (e) { /* ignore */ }
+    onChange();
+  } }, options.map(o => h('option', { value: o.v }, o.label)));
+  sel.value = cur;
+  return {
+    el: h('label', { class: 'grid-tools', style: { margin: 0 } }, h('span', { class: 'hint', style: { display: 'flex', alignItems: 'center', gap: '6px' } }, icon('sort'), 'Sort'), sel),
+    sort: (list) => { const o = options.find(x => x.v === sel.value) || options[0]; return [...list].sort(o.cmp); },
+  };
+}
+
+const _byName = (a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { numeric: true, sensitivity: 'base' });
+const _num = (v, empty) => (v == null ? empty : v);
+// Common list orders. Items can have: name, n/count (photos), newest, oldest (timestamps), bytes, created_at.
+export const LIST_SORTS = {
+  mostPhotos: { v: 'most', label: 'Most photos', cmp: (a, b) => (b.n ?? b.count ?? 0) - (a.n ?? a.count ?? 0) || _byName(a, b) },
+  fewestPhotos: { v: 'fewest', label: 'Fewest photos', cmp: (a, b) => (a.n ?? a.count ?? 0) - (b.n ?? b.count ?? 0) || _byName(a, b) },
+  nameAZ: { v: 'az', label: 'Name · A to Z', cmp: _byName },
+  nameZA: { v: 'za', label: 'Name · Z to A', cmp: (a, b) => _byName(b, a) },
+  newest: { v: 'newest', label: 'Newest photos first', cmp: (a, b) => _num(b.newest, -1e15) - _num(a.newest, -1e15) || _byName(a, b) },
+  oldest: { v: 'oldest', label: 'Oldest photos first', cmp: (a, b) => _num(a.oldest, 1e15) - _num(b.oldest, 1e15) || _byName(a, b) },
+  largest: { v: 'largest', label: 'Size · largest first', cmp: (a, b) => (b.bytes || 0) - (a.bytes || 0) || _byName(a, b) },
+  smallest: { v: 'smallest', label: 'Size · smallest first', cmp: (a, b) => (a.bytes || 0) - (b.bytes || 0) || _byName(a, b) },
+  created: { v: 'created', label: 'Recently created', cmp: (a, b) => (b.created_at || 0) - (a.created_at || 0) },
+  createdOld: { v: 'created_old', label: 'Oldest created', cmp: (a, b) => (a.created_at || 0) - (b.created_at || 0) },
+};

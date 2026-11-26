@@ -1,12 +1,29 @@
 // The photo grid used by the timeline, people, places, albums, tags and search.
 // Justified rows grouped by day, endless scrolling, select-many with actions.
-import { h, icon, api, thumbUrl, fmtDay, fmtDuration, toast, errToast, modal, confirmDialog, download, MONTHS, MONTHS_LONG, num } from './ui.js';
+import { h, icon, api, thumbUrl, fmtDay, fmtDuration, fmtBytes, toast, errToast, modal, confirmDialog, download, MONTHS, MONTHS_LONG, num } from './ui.js';
 import { openViewer } from './viewer.js';
 import { state } from './state.js';
 
+export const SORT_OPTIONS = [
+  { sort: 'taken', order: 'desc', label: 'Date taken · newest first' },
+  { sort: 'taken', order: 'asc', label: 'Date taken · oldest first' },
+  { sort: 'added', order: 'desc', label: 'Date added · newest first' },
+  { sort: 'added', order: 'asc', label: 'Date added · oldest first' },
+  { sort: 'size', order: 'desc', label: 'File size · largest first' },
+  { sort: 'size', order: 'asc', label: 'File size · smallest first' },
+  { sort: 'name', order: 'asc', label: 'File name · A to Z' },
+  { sort: 'name', order: 'desc', label: 'File name · Z to A' },
+  { sort: 'type', order: 'asc', label: 'Type · photos first' },
+  { sort: 'type', order: 'desc', label: 'Type · videos first' },
+];
+
 export class PhotoGrid {
-  constructor({ query = {}, scrubber = false, header = null, emptyText = 'No photos here yet.', hiddenView = false, extraActions = [] } = {}) {
+  constructor({ query = {}, scrubber = false, header = null, emptyText = 'No photos here yet.', hiddenView = false, extraActions = [], sortable = true } = {}) {
     this.query = { ...query };
+    this.sortable = sortable;
+    // remembered per page, e.g. one album sorted by name and the timeline by date
+    this.sortKey = 'ep_sort:' + (location.hash.split('?')[0] || '#/') + (query.smart ? ':smart' : query.q ? ':q' : '');
+    this.sort = (() => { try { const v = JSON.parse(localStorage.getItem(this.sortKey) || 'null'); if (v && SORT_OPTIONS.some(o => o.sort === v.sort && o.order === v.order)) return v; } catch (e) { /* ignore */ } return { sort: 'taken', order: 'desc' }; })();
     this.extraActions = extraActions;
     this.useScrubber = scrubber;
     this.header = header;
@@ -21,9 +38,10 @@ export class PhotoGrid {
     this.jumped = false;
     this.el = h('div', { class: 'timeline' });
     this.groupsEl = h('div', { class: 'groups' });
+    this.toolsEl = this.sortable ? this.sortBar() : null; // sits just above the grid
     this.sentinel = h('div', { class: 'load-more' });
     this.el.append(this.groupsEl);
-    if (this.useScrubber) { this.scrubEl = h('nav', { class: 'scrubber', 'aria-label': 'Jump to date' }); this.el.append(this.scrubEl); }
+    if (this.useScrubber) { this.scrubEl = h('nav', { class: 'scrubber', 'aria-label': 'Jump to date' }); this.el.append(this.scrubEl); this.scrubEl.classList.toggle('hidden', this.sort.sort !== 'taken'); }
     this.selbar = null;
     this.days = [];
     this.renderedWidth = 0;
@@ -36,6 +54,7 @@ export class PhotoGrid {
   }
 
   mount(parent) {
+    if (this.toolsEl) parent.append(this.toolsEl);
     parent.append(this.el);
     state.activeGrid = this; // so a photo opened from the address can use this list for next/previous
     this.io = new IntersectionObserver((ents) => { if (ents.some(e => e.isIntersecting)) this.loadMore(); }, { rootMargin: '1200px' });
@@ -47,6 +66,7 @@ export class PhotoGrid {
 
   destroy() {
     if (state.activeGrid === this) state.activeGrid = null;
+    if (this.toolsEl) this.toolsEl.remove();
     this.io && this.io.disconnect();
     window.removeEventListener('resize', this._resize);
     this.clearSelection();
@@ -65,7 +85,9 @@ export class PhotoGrid {
     this.loading = true;
     try {
       const qs = new URLSearchParams({ ...this.query, limit: 400 });
-      if (this.next) { qs.set('before_ts', this.next.before_ts); qs.set('before_id', this.next.before_id); }
+      if (this.sort.sort !== 'taken' || this.sort.order !== 'desc') { qs.set('sort', this.sort.sort); qs.set('order', this.sort.order); }
+      if (this.next && this.next.offset != null) qs.set('offset', this.next.offset);
+      else if (this.next) { qs.set('before_ts', this.next.before_ts); qs.set('before_id', this.next.before_id); }
       const res = await api('/api/assets?' + qs);
       const start = this.items.length;
       this.items.push(...res.items);
@@ -75,6 +97,24 @@ export class PhotoGrid {
       else this.appendFrom(start);
     } catch (e) { errToast(e); }
     finally { this.loading = false; }
+  }
+
+  sortBar() {
+    const sel = h('select', { class: 'input sort-select', 'aria-label': 'Sort photos', onchange: () => {
+      const o = SORT_OPTIONS[Number(sel.value)];
+      this.sort = { sort: o.sort, order: o.order };
+      try { localStorage.setItem(this.sortKey, JSON.stringify(this.sort)); } catch (e) { /* ignore */ }
+      if (this.scrubEl) this.scrubEl.classList.toggle('hidden', o.sort !== 'taken');
+      this.clearSelection();
+      this.reload();
+    } }, SORT_OPTIONS.map((o, i) => h('option', { value: i }, o.label)));
+    sel.value = String(SORT_OPTIONS.findIndex(o => o.sort === this.sort.sort && o.order === this.sort.order));
+    return h('div', { class: 'grid-tools' }, h('label', { class: 'hint' }, icon('sort'), 'Sort'), sel);
+  }
+
+  sortLabel() {
+    const o = SORT_OPTIONS.find(x => x.sort === this.sort.sort && x.order === this.sort.order);
+    return o ? o.label : '';
   }
 
   async loadMonths() {
@@ -115,7 +155,7 @@ export class PhotoGrid {
     const days = [];
     let cur = null;
     for (const it of items) {
-      const d = (it.t || '').slice(0, 10);
+      const d = it.g != null ? it.g : (it.t || '').slice(0, 10);
       if (!cur || cur.day !== d) { cur = { day: d, items: [] }; days.push(cur); }
       cur.items.push(it);
     }
@@ -128,11 +168,12 @@ export class PhotoGrid {
     const cities = {};
     day.items.forEach(i => { if (i.c) cities[i.c] = (cities[i.c] || 0) + 1; });
     const place = Object.entries(cities).sort((a, b) => b[1] - a[1]).map(x => x[0]).slice(0, 2).join(' · ');
+    const flat = day.day === 'all';
     const sec = h('section', { class: 'day' },
       h('div', { class: 'day-head' },
-        h('h3', {}, fmtDay(day.day)),
-        place ? h('span', { class: 'place' }, place) : null,
-        h('button', { class: 'btn small ghost selday', onclick: () => this.toggleMany(day.items.map(i => i.id)) }, 'Select day')));
+        h('h3', {}, flat ? this.sortLabel() : (this.sort.sort === 'added' ? `Added ${fmtDay(day.day)}` : fmtDay(day.day))),
+        place && !flat ? h('span', { class: 'place' }, place) : null,
+        flat ? null : h('button', { class: 'btn small ghost selday', onclick: () => this.toggleMany(day.items.map(i => i.id)) }, 'Select day')));
     let row = [], sum = 0;
     const flush = (last) => {
       if (!row.length) return;
@@ -233,6 +274,7 @@ export class PhotoGrid {
     if (it.k === 'v') t.append(h('span', { class: 'vbadge' }, icon('play', 'small'), fmtDuration(it.d)));
     else if (it.l) t.append(h('span', { class: 'live' }, 'LIVE'));
     if (it.f) { const s = icon('heart', 'fav'); t.append(s); }
+    if (it.sz != null) t.append(h('span', { class: 'szbadge' }, fmtBytes(it.sz)));
     // Long-press to start selecting on phones
     let pressTimer = null, pressed = false;
     t.addEventListener('touchstart', () => { pressed = false; pressTimer = setTimeout(() => { pressed = true; this.toggle(it); if (navigator.vibrate) navigator.vibrate(20); }, 450); }, { passive: true });

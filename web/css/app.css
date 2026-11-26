@@ -372,3 +372,9 @@ main.content{flex:1 1 auto;min-width:0;padding:20px 28px 60px}
 .fsel-wrap{position:absolute;top:10px;right:10px;z-index:3;width:34px;height:34px;display:grid;place-items:center;cursor:pointer;border-radius:10px;background:rgba(20,22,28,.6)}
 .fsel{width:22px;height:22px;accent-color:var(--accent);cursor:pointer;margin:0}
 .fcard.picked{outline:3px solid var(--accent);outline-offset:-1px;background:var(--accentbg)}
+
+/* sorting */
+.grid-tools{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:0 0 10px}
+.grid-tools label{display:flex;align-items:center;gap:6px}
+.grid-tools .sort-select,.list-sort{width:auto;min-width:0;padding-top:6px;padding-bottom:6px;font-size:13px}
+.tile .szbadge{position:absolute;left:6px;bottom:6px;font-size:11px;font-weight:600;color:#fff;background:rgba(0,0,0,.55);padding:2px 6px;border-radius:6px;pointer-events:none}

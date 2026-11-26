@@ -176,6 +176,7 @@ export async function library(el) {
           lib.scanning ? h('button', { class: 'btn small warn', onclick: async () => { await post('/api/admin/jobs/stop_scan'); toast('Stopping…'); setTimeout(tick, 800); } }, 'Stop scan')
             : h('button', { class: 'btn small', onclick: async () => { await post('/api/admin/jobs/scan', { library_id: lib.id }); toast(lib.scan_stopped ? 'Resuming. Files already found are skipped.' : 'Scanning…'); setTimeout(tick, 800); } }, lib.scan_stopped ? 'Resume scan' : 'Scan'),
           h('button', { class: 'iconbtn', 'aria-label': 'Library options', onclick: () => libraryOptions(lib, tick) }, icon('more'))),
+        h('div', { class: 'row', style: { justifyContent: 'flex-end', padding: '0 20px 8px' } }, folderSorter(() => { if (folderCache[lib.id]) draw(folderCache[lib.id]); })),
         h('div', { class: 'folder-row head' }, h('span', {}, 'Folder'), h('span', {}, 'Files'), h('span', {}, 'Faces'), h('span', {}, 'Status')),
         treeBox));
       const draw = (folders) => drawTree(treeBox, lib, folders, jobs);
@@ -183,6 +184,32 @@ export async function library(el) {
       api(`/api/admin/libraries/${lib.id}/folders`).then(f => { folderCache[lib.id] = f; draw(f); }).catch(errToast);
     }
     libsBox.append(h('div', {}, h('button', { class: 'btn', onclick: () => addLibrary(tick) }, '+ Add another library')));
+  }
+
+  // Sort menu for the folder lists (same order at every level of the tree).
+  const FOLDER_SORTS = [
+    { v: 'az', label: 'Name · A to Z', cmp: (a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }) },
+    { v: 'za', label: 'Name · Z to A', cmp: (a, b) => b.path.localeCompare(a.path, undefined, { numeric: true }) },
+    { v: 'most', label: 'Most files', cmp: (a, b) => b.count - a.count },
+    { v: 'fewest', label: 'Fewest files', cmp: (a, b) => a.count - b.count },
+    { v: 'faces', label: 'Most faces', cmp: (a, b) => b.faces - a.faces },
+    { v: 'newest', label: 'Newest photos first', cmp: (a, b) => (b.newest ?? -1e15) - (a.newest ?? -1e15) },
+    { v: 'oldest', label: 'Oldest photos first', cmp: (a, b) => (a.oldest ?? 1e15) - (b.oldest ?? 1e15) },
+    { v: 'largest', label: 'Size · largest first', cmp: (a, b) => (b.bytes || 0) - (a.bytes || 0) },
+    { v: 'smallest', label: 'Size · smallest first', cmp: (a, b) => (a.bytes || 0) - (b.bytes || 0) },
+  ];
+  const folderSortKey = () => { try { return localStorage.getItem('ep_lsort:folders') || 'az'; } catch (e) { return 'az'; } };
+  function sortFolders(list) {
+    const o = FOLDER_SORTS.find(x => x.v === folderSortKey()) || FOLDER_SORTS[0];
+    return [...list].sort((a, b) => o.cmp(a, b) || a.path.localeCompare(b.path, undefined, { numeric: true }));
+  }
+  function folderSorter(redraw) {
+    const sel = h('select', { class: 'input list-sort', 'aria-label': 'Sort folders', onchange: () => {
+      try { localStorage.setItem('ep_lsort:folders', sel.value); } catch (e) { /* ignore */ }
+      redraw();
+    } }, FOLDER_SORTS.map(o => h('option', { value: o.v }, o.label)));
+    sel.value = folderSortKey();
+    return h('label', { class: 'grid-tools', style: { margin: 0 } }, h('span', { class: 'hint', style: { display: 'flex', alignItems: 'center', gap: '6px' } }, icon('sort'), 'Sort folders'), sel);
   }
 
   function drawTree(box, lib, folders, jobs) {
@@ -202,7 +229,7 @@ export async function library(el) {
       return [`Faces ${num(f.faces_done)}/${num(f.count)}`, 'var(--accent2)'];
     };
     const render = (parentPath, depth) => {
-      const list = (kids[parentPath] || []).sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));
+      const list = sortFolders(kids[parentPath] || []);
       for (const f of list) {
         const key = `${lib.id}|${f.path}`;
         const hasKids = !!(kids[f.path] && kids[f.path].length);
@@ -326,7 +353,8 @@ export async function faces(el, p, q) {
   const grid = h('div', { class: 'fgrid' });
   const more = h('div', { style: { textAlign: 'center', padding: '16px' } });
   const sortSel = h('select', { class: 'input', style: { width: 'auto' }, 'aria-label': 'Sort', onchange: (e) => { sort = e.target.value; load(true); } },
-    h('option', { value: 'count' }, 'Most photos first'), h('option', { value: 'new' }, 'Newest first'));
+    h('option', { value: 'count' }, 'Most photos first'), h('option', { value: 'fewest' }, 'Fewest photos first'),
+    h('option', { value: 'new' }, 'Newest first'), h('option', { value: 'old' }, 'Oldest first'));
   sortSel.value = sort;
   const intro = h('p', { class: 'hint', style: { margin: '0 0 12px' } });
   const cleanBtn = h('button', { class: 'btn', onclick: () => cleanUp() }, icon('trash'), 'Clean up…');

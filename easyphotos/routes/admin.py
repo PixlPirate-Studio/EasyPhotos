@@ -177,7 +177,8 @@ def remove_library(lid: int, user: User = Depends(admin_user)):
 def library_folders(lid: int, user: User = Depends(admin_user)):
     """Every folder in a library with photo counts (including sub-folders)."""
     rows = db.q("SELECT folder, COUNT(*) AS n, SUM(CASE WHEN (face_status IN (1,2,-1) OR meta_status=-1) THEN 1 ELSE 0 END) AS fd, "
-                "SUM(CASE WHEN meta_status=0 THEN 1 ELSE 0 END) AS pend "
+                "SUM(CASE WHEN meta_status=0 THEN 1 ELSE 0 END) AS pend, "
+                "COALESCE(SUM(size), 0) AS bytes, MAX(taken_ts) AS newest, MIN(taken_ts) AS oldest "
                 "FROM assets WHERE library_id=? AND deleted_at IS NULL GROUP BY folder", (lid,))
     faces = {r["folder"]: r["n"] for r in db.q(
         "SELECT a.folder, COUNT(*) AS n FROM faces f JOIN assets a ON a.id=f.asset_id WHERE a.library_id=? AND f.rejected=0 "
@@ -187,8 +188,14 @@ def library_folders(lid: int, user: User = Depends(admin_user)):
         parts = r["folder"].split("/") if r["folder"] else []
         for i in range(0, len(parts) + 1):
             key = "/".join(parts[:i])
-            node = tree.setdefault(key, {"path": key, "count": 0, "faces_done": 0, "pending": 0, "faces": 0})
+            node = tree.setdefault(key, {"path": key, "count": 0, "faces_done": 0, "pending": 0, "faces": 0,
+                                         "bytes": 0, "newest": None, "oldest": None})
             node["count"] += r["n"]
+            node["bytes"] += r["bytes"] or 0
+            if r["newest"] is not None and (node["newest"] is None or r["newest"] > node["newest"]):
+                node["newest"] = r["newest"]
+            if r["oldest"] is not None and (node["oldest"] is None or r["oldest"] < node["oldest"]):
+                node["oldest"] = r["oldest"]
             node["faces_done"] += r["fd"] or 0
             node["pending"] += r["pend"] or 0
             node["faces"] += faces.get(r["folder"], 0)

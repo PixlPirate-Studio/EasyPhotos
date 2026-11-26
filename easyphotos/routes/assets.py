@@ -37,31 +37,63 @@ def _favs(user, ids):
 
 # ------------------------------------------------------------ lists
 
+# How photo lists can be sorted: field -> SQL. Date taken is the default.
+SORTS = {
+    "taken": "a.taken_ts",
+    "added": "a.added_at",
+    "size": "a.size",
+    "name": "a.filename COLLATE NOCASE",
+    "type": "(a.kind = 'video')",
+}
+
+
 @router.get("/assets")
 def list_assets(request: Request, user: User = Depends(current_user)):
-    """Photos newest first, in pages. Filters: see build_filter()."""
+    """Photos in pages, newest first by default. Filters: see build_filter().
+    sort: taken | added | size | name | type, order: asc | desc."""
     p = dict(request.query_params)
     where, args = build_filter(user, p)
     limit = max(1, min(int(p.get("limit", 300)), 1000))
     order = "ASC" if p.get("order") == "asc" else "DESC"
+    sort = p.get("sort") if p.get("sort") in SORTS else "taken"
     total = None
     if p.get("count") == "1":
         total = db.val(f"SELECT COUNT(*) FROM assets a JOIN libraries l ON l.id=a.library_id WHERE {where}", args, default=0)
-    if p.get("before_ts"):
-        bts, bid = float(p["before_ts"]), int(p.get("before_id", 2**62))
-        op = ">" if order == "ASC" else "<"
-        where += f" AND (a.taken_ts {op} ? OR (a.taken_ts = ? AND a.id {op} ?))"
-        args = args + [bts, bts, bid]
-    rows = db.q(
-        f"SELECT a.id, a.taken_at, a.taken_ts, a.width, a.height, a.kind, a.duration, a.city, a.thumb_ver, a.live_video_id, a.edit_rot, a.edit_crop "
-        f"FROM assets a JOIN libraries l ON l.id=a.library_id WHERE {where} "
-        f"ORDER BY a.taken_ts {order}, a.id {order} LIMIT ?", args + [limit + 1])
+    cols = ("a.id, a.taken_at, a.taken_ts, a.width, a.height, a.kind, a.duration, a.city, a.thumb_ver, a.live_video_id, "
+            "a.edit_rot, a.edit_crop, a.added_at, a.size, a.filename")
+    if sort == "taken":
+        if p.get("before_ts"):
+            bts, bid = float(p["before_ts"]), int(p.get("before_id", 2**62))
+            op = ">" if order == "ASC" else "<"
+            where += f" AND (a.taken_ts {op} ? OR (a.taken_ts = ? AND a.id {op} ?))"
+            args = args + [bts, bts, bid]
+        rows = db.q(f"SELECT {cols} FROM assets a JOIN libraries l ON l.id=a.library_id WHERE {where} "
+                    f"ORDER BY a.taken_ts {order}, a.id {order} LIMIT ?", args + [limit + 1])
+    else:
+        # Other orders page by position. Within the same size/name/type: newest photo first.
+        offset = max(0, int(p.get("offset", 0)))
+        rows = db.q(f"SELECT {cols} FROM assets a JOIN libraries l ON l.id=a.library_id WHERE {where} "
+                    f"ORDER BY {SORTS[sort]} {order}, a.taken_ts DESC, a.id DESC LIMIT ? OFFSET ?", args + [limit + 1, offset])
     more = len(rows) > limit
     rows = rows[:limit]
     favs = _favs(user, [r["id"] for r in rows])
     items = [_item(r, favs) for r in rows]
-    nxt = {"before_ts": rows[-1]["taken_ts"], "before_id": rows[-1]["id"]} if more and rows else None
-    return {"items": items, "next": nxt, "total": total}
+    if sort == "added":
+        # grouped by the day the photo was added to the library
+        for it, r in zip(items, rows):
+            it["g"] = dt.datetime.fromtimestamp(r["added_at"]).strftime("%Y-%m-%d") if r["added_at"] else ""
+    elif sort != "taken":
+        for it, r in zip(items, rows):
+            it["g"] = "all"
+            if sort == "size":
+                it["sz"] = r["size"]
+    if not more or not rows:
+        nxt = None
+    elif sort == "taken":
+        nxt = {"before_ts": rows[-1]["taken_ts"], "before_id": rows[-1]["id"]}
+    else:
+        nxt = {"offset": int(p.get("offset", 0)) + len(rows)}
+    return {"items": items, "next": nxt, "total": total, "sort": sort, "order": order.lower()}
 
 
 @router.get("/assets/months")
@@ -479,7 +511,8 @@ def memories(user: User = Depends(current_user)):
 @router.get("/tags")
 def tags(user: User = Depends(current_user)):
     lc, la = library_clause(user)
-    rows = db.q("SELECT t.id, t.name, COUNT(a.id) AS n, MAX(a.id) AS cover FROM tags t "
+    rows = db.q("SELECT t.id, t.name, COUNT(a.id) AS n, MAX(a.id) AS cover, "
+                "MAX(a.taken_ts) AS newest, MIN(a.taken_ts) AS oldest, COALESCE(SUM(a.size), 0) AS bytes FROM tags t "
                 "JOIN asset_tags at ON at.tag_id=t.id JOIN assets a ON a.id=at.asset_id JOIN libraries l ON l.id=a.library_id "
                 f"WHERE a.deleted_at IS NULL AND a.hidden=0 AND l.enabled=1{lc} GROUP BY t.id ORDER BY n DESC", la)
     return [dict(r) for r in rows]
@@ -514,7 +547,8 @@ def delete_tag(tag_id: int, user: User = Depends(admin_user)):
 @router.get("/albums")
 def albums(user: User = Depends(current_user)):
     lc, la = library_clause(user)
-    rows = db.q("SELECT al.id, al.name, al.created_at, COUNT(a.id) AS n, MAX(a.id) AS cover FROM albums al "
+    rows = db.q("SELECT al.id, al.name, al.created_at, COUNT(a.id) AS n, MAX(a.id) AS cover, "
+                "MAX(a.taken_ts) AS newest, MIN(a.taken_ts) AS oldest, COALESCE(SUM(a.size), 0) AS bytes FROM albums al "
                 "LEFT JOIN album_assets aa ON aa.album_id=al.id "
                 "LEFT JOIN assets a ON a.id=aa.asset_id AND a.deleted_at IS NULL AND a.hidden=0" + lc +
                 " GROUP BY al.id ORDER BY al.created_at DESC", la)
