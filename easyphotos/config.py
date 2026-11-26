@@ -41,10 +41,15 @@ DB_PATH = CONFIG_DIR / "easyphotos.db"
 BACKUP_DIR = CONFIG_DIR / "backups"
 LOG_DIR = CONFIG_DIR / "logs"
 
+# Camera RAW files: shown using the full-size preview the camera stores inside them.
+RAW_EXTS = {
+    ".rw2", ".raw", ".cr2", ".cr3", ".crw", ".nef", ".nrw", ".arw", ".srf", ".sr2", ".orf", ".raf",
+    ".pef", ".dng", ".srw", ".x3f", ".3fr", ".erf", ".kdc", ".mrw", ".rwl", ".iiq", ".mef", ".mos",
+}
 IMAGE_EXTS = {
     ".jpg", ".jpeg", ".jpe", ".png", ".webp", ".heic", ".heif", ".hif",
     ".gif", ".bmp", ".tif", ".tiff", ".avif",
-}
+} | RAW_EXTS
 VIDEO_EXTS = {
     ".mp4", ".mov", ".m4v", ".3gp", ".mkv", ".avi", ".webm", ".mts", ".m2ts", ".wmv", ".mpg", ".mpeg",
 }

@@ -276,6 +276,10 @@ class Worker:
                 entries.append(("thumbs", "info", f"Thumbnail made: {label}"))
         activity(entries)
         n = scanner.pair_live_photos([aid for aid, cols in zip(ids, results) if cols.get("meta_status") == 1])
+        try:
+            scanner.pair_raw_files([aid for aid, cols in zip(ids, results) if cols.get("meta_status") == 1])
+        except Exception as e:
+            log.warning("Pairing RAW + JPEG failed: %s", e)
         if n:
             activity([("thumbs", "info", f"Matched {n} Live Photo{'s' if n > 1 else ''} with their photo")])
         self.meta_times.append((len(ids), time.time() - t0))

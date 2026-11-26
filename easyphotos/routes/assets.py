@@ -10,7 +10,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
-from .. import db, geocode, media, recycle, settings, xmp
+from .. import config, db, geocode, media, recycle, settings, xmp
 from ..security import User, admin_user, audit, current_user, download_user
 from .common import (MIME, asset_path, build_filter, cached_file, get_asset_for, ids_param, library_clause,
                      ranged_file, visible_ids)
@@ -133,6 +133,8 @@ def asset_detail(asset_id: int, user: User = Depends(current_user)):
         "duration": a["duration"], "video_codec": a["video_codec"],
         "description": a["description"], "favorite": fav, "hidden": bool(a["hidden"]),
         "live": bool(a["live_video_id"]), "v": a["thumb_ver"], "deleted": a["deleted_at"] is not None,
+        "is_raw": (a["ext"] or "").lower() in config.RAW_EXTS,
+        "raw": ({"filename": db.val("SELECT filename FROM assets WHERE id=?", (a["raw_id"],))} if a["raw_id"] else None),
         "edit": {"rot": a["edit_rot"] or 0, "crop": [float(x) for x in a["edit_crop"].split(",")] if a["edit_crop"] else None},
         "faces": [{"id": f["id"], "x1": f["x1"], "y1": f["y1"], "x2": f["x2"], "y2": f["y2"],
                    "person_id": f["person_id"] if (user.is_admin or not f["hidden"]) else None,
@@ -219,6 +221,18 @@ def download_edited(asset_id: int, user: User = Depends(download_user)):
 def original(asset_id: int, request: Request, user: User = Depends(download_user)):
     a = get_asset_for(user, asset_id)
     return ranged_file(request, asset_path(a), MIME.get(a["ext"], "application/octet-stream"), a["filename"], download=True)
+
+
+@router.get("/assets/{asset_id}/raw")
+def raw_original(asset_id: int, request: Request, user: User = Depends(download_user)):
+    """The RAW file kept behind a JPEG (RAW + JPEG of the same shot)."""
+    a = get_asset_for(user, asset_id)
+    if not a["raw_id"]:
+        raise HTTPException(404, "This photo has no RAW file.")
+    r = db.q1("SELECT a.*, l.path AS lib_path FROM assets a JOIN libraries l ON l.id=a.library_id WHERE a.id=?", (a["raw_id"],))
+    if r is None:
+        raise HTTPException(404, "The RAW file is gone.")
+    return ranged_file(request, asset_path(r), "application/octet-stream", r["filename"], download=True)
 
 
 @router.get("/assets/{asset_id}/video")

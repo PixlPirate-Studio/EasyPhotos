@@ -342,6 +342,8 @@ class Viewer {
       irow('calendar', dtx.date, dtx.time + (d.date_source === 'manual' ? ' · fixed by admin' : d.date_source === 'file' ? ' · from file date' : '')),
       camera || exif ? irow('camera', camera || 'Camera', exif) : null,
       irow('file', d.filename, [d.width && d.height ? `${d.width} × ${d.height}` : null, fmtBytes(d.size), d.duration ? fmtDuration(d.duration) : null, d.library].filter(Boolean).join(' · ')),
+      d.raw ? irow('photos', 'RAW + JPEG', `The RAW file ${d.raw.filename} is kept with this photo. Download offers both.`) : null,
+      d.is_raw ? irow('photos', 'RAW photo', 'Shown using the preview your camera saved inside the file. Download gives you the RAW file.') : null,
       named.length ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
         h('div', { style: { fontSize: '13px', fontWeight: 600, color: 'var(--text2)' } }, 'People in this photo'),
         h('div', { class: 'facelist' }, named.map(f => f.person_id && f.name
@@ -447,13 +449,18 @@ class Viewer {
     this.renderSide();
   }
 
-  downloadChoice() {
+  async downloadChoice() {
     const it = this.item;
-    const ed = this.detail && this.detail.edit;
-    if (!ed || (!ed.rot && !ed.crop)) { download(`/api/assets/${it.id}/original`); return; }
+    if (!this.detail) this.detail = await api(`/api/assets/${it.id}`);
+    const d = this.detail;
+    const ed = d.edit;
+    const edited = ed && (ed.rot || ed.crop);
+    if (!edited && !d.raw) { download(`/api/assets/${it.id}/original`); return; }
+    const opt = (cls, ic, label, url) => h('button', { class: `btn ${cls}`, onclick: () => { m.close(); download(url); } }, icon(ic), label);
     const m = modal({ title: 'Download', body: h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
-      h('button', { class: 'btn primary', onclick: () => { m.close(); download(`/api/assets/${it.id}/edited`); } }, icon('crop'), 'Edited copy (cropped / rotated)'),
-      h('button', { class: 'btn', onclick: () => { m.close(); download(`/api/assets/${it.id}/original`); } }, icon('down'), 'Original, exactly as taken')) });
+      edited ? opt('primary', 'crop', 'Edited copy (cropped / rotated)', `/api/assets/${it.id}/edited`) : null,
+      opt(edited ? '' : 'primary', 'down', edited ? 'Original, exactly as taken' : `Photo (${d.filename})`, `/api/assets/${it.id}/original`),
+      d.raw ? opt('', 'photos', `RAW file (${d.raw.filename})`, `/api/assets/${it.id}/raw`) : null) });
   }
 
   // ---- crop & rotate: the photo file is never changed, only instructions are saved

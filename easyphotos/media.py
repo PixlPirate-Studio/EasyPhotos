@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from . import db, settings
+from . import config, db, settings
 
 log = logging.getLogger("easyphotos.media")
 
@@ -127,7 +127,58 @@ def fmt_dt(d: dt.datetime) -> str:
 
 # ---------------------------------------------------------------- images
 
+def is_raw(path) -> bool:
+    return os.path.splitext(str(path))[1].lower() in config.RAW_EXTS
+
+
+def raw_preview_jpeg(path: str):
+    """The JPEG preview a camera stores inside a RAW file (bytes), or None."""
+    import rawpy
+    try:
+        with rawpy.imread(str(path)) as r:
+            t = r.extract_thumb()
+            if t.format == rawpy.ThumbFormat.JPEG:
+                return t.data
+    except Exception:
+        pass
+    return None
+
+
+def _open_raw(path: str) -> Image.Image:
+    """A RAW photo as a normal picture. Uses the camera's full-size preview inside
+    the file (fast); if there isn't a good one, develops the RAW itself (slower)."""
+    import io as _io
+    import rawpy
+    with rawpy.imread(str(path)) as r:
+        flip = r.sizes.flip
+        full_w = r.sizes.width
+        try:
+            t = r.extract_thumb()
+        except Exception:
+            t = None
+        img = None
+        if t is not None and t.format == rawpy.ThumbFormat.JPEG:
+            img = Image.open(_io.BytesIO(t.data))
+            img.load()
+            exif_o = (img.getexif() or {}).get(T_ORIENTATION, 1)
+            img = ImageOps.exif_transpose(img)
+            if exif_o in (None, 1) and flip:
+                # turn the preview the way the camera was held
+                img = {3: lambda i: i.transpose(Image.Transpose.ROTATE_180),
+                       5: lambda i: i.transpose(Image.Transpose.ROTATE_90),
+                       6: lambda i: i.transpose(Image.Transpose.ROTATE_270)}.get(flip, lambda i: i)(img)
+        elif t is not None and t.format == rawpy.ThumbFormat.BITMAP:
+            img = Image.fromarray(t.data)
+        # a tiny preview (some cameras) isn't good enough: develop the RAW instead
+        if img is None or max(img.size) < min(1200, full_w * 0.5):
+            rgb = r.postprocess(use_camera_wb=True, half_size=True, output_bps=8)
+            img = Image.fromarray(rgb)
+    return img.convert("RGB") if img.mode != "RGB" else img
+
+
 def open_image(path: str, draft_size: int | None = None) -> Image.Image:
+    if is_raw(path):
+        return _open_raw(path)
     img = Image.open(path)
     if draft_size and img.format == "JPEG":
         try:
@@ -149,16 +200,34 @@ def open_image(path: str, draft_size: int | None = None) -> Image.Image:
 
 
 def read_image_meta(path: str) -> dict:
-    """EXIF data from a photo. Never raises."""
+    """EXIF data from a photo. Never raises. For RAW files the details (date,
+    camera, GPS) are read from the preview inside, and the size from the RAW itself."""
     out = {}
+    src = path
+    raw_size = None
+    if is_raw(path):
+        import io as _io
+        try:
+            import rawpy
+            with rawpy.imread(str(path)) as r:
+                w, h = r.sizes.width, r.sizes.height
+                raw_size = (h, w) if r.sizes.flip in (5, 6) else (w, h)
+        except Exception:
+            pass
+        jpg = raw_preview_jpeg(path)
+        if jpg is None:
+            if raw_size:
+                out["width"], out["height"] = raw_size
+            return out
+        src = _io.BytesIO(jpg)
     try:
-        with Image.open(path) as img:
+        with Image.open(src) as img:
             w, h = img.size
             exif = img.getexif()
             orientation = exif.get(T_ORIENTATION, 1) if exif else 1
             if orientation in (5, 6, 7, 8):
                 w, h = h, w
-            out["width"], out["height"] = w, h
+            out["width"], out["height"] = raw_size or (w, h)
             if not exif:
                 return out
             out["camera_make"] = _clean_str(exif.get(T_MAKE))

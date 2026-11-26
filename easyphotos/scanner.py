@@ -165,7 +165,8 @@ def process_meta(asset_id: int) -> dict:
         else:
             meta = media.read_image_meta(path)
             img = media.open_image(path, draft_size=settings.get("preview_size"))
-            meta["width"], meta["height"] = img.size
+            if not (media.is_raw(path) and meta.get("width")):  # RAW: keep the full size, not the preview's
+                meta["width"], meta["height"] = img.size
         out["dhash"] = media.make_image_thumbs(asset_id, img)
         img.close()
         for k in ("width", "height", "camera_make", "camera_model", "lens", "fnumber", "exposure", "focal", "iso",
@@ -247,6 +248,66 @@ def pair_live_photos(video_ids=None) -> int:
                 c.execute("UPDATE assets SET is_live_part=1, face_status=2 WHERE id=?", (v["id"],))
                 c.execute("DELETE FROM dup_members WHERE asset_id=?", (v["id"],))
             paired += 1
+    return paired
+
+
+def pair_raw_files(asset_ids=None) -> int:
+    """RAW + JPEG of the same shot (same name, same folder): show the JPEG once and
+    keep the RAW behind it (for downloading). A RAW without a JPEG shows on its own.
+    asset_ids: only look at these new files (None = check everything unpaired)."""
+    raw_exts = sorted(config.RAW_EXTS)
+    rmarks = ",".join("?" * len(raw_exts))
+    base = ("SELECT id, library_id, folder, filename, ext FROM assets WHERE kind='image' AND meta_status=1 "
+            "AND deleted_at IS NULL AND is_live_part=0")
+    if asset_ids is not None:
+        ids = [int(i) for i in asset_ids]
+        if not ids:
+            return 0
+        rows = db.q(base + f" AND id IN ({','.join('?' * len(ids))})", ids)
+    else:
+        rows = db.q(base + f" AND ext IN ({rmarks}) AND id NOT IN (SELECT raw_id FROM assets WHERE raw_id IS NOT NULL)", raw_exts)
+    paired = 0
+    for r in rows:
+        stem = os.path.splitext(r["filename"])[0]
+        like = _like_escape(stem) + ".%"
+        if (r["ext"] or "").lower() in config.RAW_EXTS:
+            raw_id = r["id"]
+            other = db.q1(f"SELECT id FROM assets WHERE library_id=? AND folder=? AND kind='image' AND deleted_at IS NULL "
+                          f"AND filename LIKE ? ESCAPE '\\' AND ext NOT IN ({rmarks}) AND raw_id IS NULL "
+                          f"ORDER BY CASE ext WHEN '.jpg' THEN 0 WHEN '.jpeg' THEN 0 ELSE 1 END LIMIT 1",
+                          [r["library_id"], r["folder"], like] + raw_exts)
+            if not other:
+                continue
+            photo_id = other["id"]
+        else:
+            other = db.q1(f"SELECT id FROM assets WHERE library_id=? AND folder=? AND kind='image' AND deleted_at IS NULL "
+                          f"AND filename LIKE ? ESCAPE '\\' AND ext IN ({rmarks}) AND is_live_part=0 "
+                          f"AND id NOT IN (SELECT raw_id FROM assets WHERE raw_id IS NOT NULL) LIMIT 1",
+                          [r["library_id"], r["folder"], like] + raw_exts)
+            if not other or db.val("SELECT raw_id FROM assets WHERE id=?", (r["id"],)):
+                continue
+            raw_id, photo_id = other["id"], r["id"]
+        with db.tx() as c:
+            c.execute("UPDATE assets SET raw_id=? WHERE id=?", (raw_id, photo_id))
+            # a JPEG without its own date/camera details borrows them from its RAW
+            c.execute("""UPDATE assets SET
+                    taken_at=(SELECT taken_at FROM assets WHERE id=:raw), taken_ts=(SELECT taken_ts FROM assets WHERE id=:raw),
+                    date_source='exif'
+                WHERE id=:photo AND date_source IN ('file', 'filename')
+                  AND (SELECT date_source FROM assets WHERE id=:raw)='exif'""", {"raw": raw_id, "photo": photo_id})
+            for col in ("camera_make", "camera_model", "lens", "fnumber", "exposure", "focal", "iso"):
+                c.execute(f"UPDATE assets SET {col}=(SELECT {col} FROM assets WHERE id=?) WHERE id=? AND {col} IS NULL",
+                          (raw_id, photo_id))
+            c.execute("""UPDATE assets SET lat=(SELECT lat FROM assets WHERE id=:raw), lon=(SELECT lon FROM assets WHERE id=:raw),
+                    city=(SELECT city FROM assets WHERE id=:raw), state=(SELECT state FROM assets WHERE id=:raw),
+                    country=(SELECT country FROM assets WHERE id=:raw), loc_source='exif'
+                WHERE id=:photo AND lat IS NULL AND (SELECT lat FROM assets WHERE id=:raw) IS NOT NULL""", {"raw": raw_id, "photo": photo_id})
+            # the RAW now hides behind its JPEG: no second copy of faces, duplicates or search results
+            c.execute("UPDATE assets SET is_live_part=1, face_status=2, quality_status=2, clip_status=2 WHERE id=?", (raw_id,))
+            c.execute("DELETE FROM faces WHERE asset_id=? AND manual=0", (raw_id,))
+            c.execute("DELETE FROM dup_members WHERE asset_id=?", (raw_id,))
+            c.execute("DELETE FROM clip_embeddings WHERE asset_id=?", (raw_id,))
+        paired += 1
     return paired
 
 

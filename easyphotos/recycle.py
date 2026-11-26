@@ -40,8 +40,12 @@ def _move(src: Path, dest: Path) -> None:
 
 def _ids_with_live(ids):
     out = list(ids)
-    for r in db.q(f"SELECT live_video_id FROM assets WHERE id IN ({','.join('?' * len(ids))}) AND live_video_id IS NOT NULL", ids):
-        out.append(r["live_video_id"])
+    for r in db.q(f"SELECT live_video_id, raw_id FROM assets WHERE id IN ({','.join('?' * len(ids))}) "
+                  f"AND (live_video_id IS NOT NULL OR raw_id IS NOT NULL)", ids):
+        if r["live_video_id"]:
+            out.append(r["live_video_id"])
+        if r["raw_id"]:
+            out.append(r["raw_id"])  # a RAW goes (and comes back) with its JPEG
     return list(dict.fromkeys(out))
 
 

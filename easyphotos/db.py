@@ -337,6 +337,8 @@ MIGRATIONS = [
     # edit_rot: 0/90/180/270 clockwise. edit_crop: "x,y,w,h" (0-1, after rotating) or NULL.
     ("assets", "edit_rot", "INTEGER NOT NULL DEFAULT 0"),
     ("assets", "edit_crop", "TEXT"),
+    # RAW + JPEG of the same shot: the JPEG points at its RAW (shown once, RAW downloadable)
+    ("assets", "raw_id", "INTEGER"),
 ]
 
 
